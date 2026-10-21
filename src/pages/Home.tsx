@@ -21,7 +21,6 @@ function BalanceCard() {
   const total = data ? data.free.planck + data.reserved.planck : 0n;
   return (
     <div className="relative overflow-hidden rounded-3xl border border-line bg-surface p-6 sm:p-8">
-      <div className="mosaic absolute inset-0 opacity-60" />
       <div className="glow absolute inset-0" />
       <div className="relative">
         <div className="flex items-center gap-2 text-sm text-muted">

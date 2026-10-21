@@ -12,7 +12,6 @@ import { useWallet } from "../lib/session";
 export function Frame({ children, back }: { children: ReactNode; back?: string }) {
   return (
     <div className="relative min-h-dvh overflow-hidden">
-      <div className="mosaic absolute inset-0" />
       <div className="glow absolute inset-0" />
       <div className="relative mx-auto flex min-h-dvh max-w-lg flex-col px-4 py-8 sm:py-14">
         <div className="mb-8 flex items-center justify-between">
