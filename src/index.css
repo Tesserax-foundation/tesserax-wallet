@@ -84,6 +84,13 @@ body {
   min-height: 100dvh;
 }
 
+/* The popup of the extension: the browser sizes it from its content. */
+html.popup body {
+  width: 360px;
+  height: 600px;
+  min-height: 0;
+}
+
 ::selection {
   background: var(--accent);
   color: white;

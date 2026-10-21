@@ -1,6 +1,5 @@
 import { Keypair } from "@tesserax/sdk";
 import { ArrowLeft, Bot, Check, Copy, Download, Eye, FileKey2, KeyRound, MoreHorizontal, Pencil, Plus, ShieldAlert, ShieldCheck, Sparkles, Trash2, Wallet } from "lucide-react";
-import { copyText } from "../lib/clipboard";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate } from "react-router";
 import { Button, ErrorText, PasswordInput, TextInput } from "../components/forms";
@@ -8,8 +7,10 @@ import { Page } from "../components/Layout";
 import { Identicon } from "../components/links";
 import { Sheet } from "../components/Sheet";
 import { Badge, Card, cx, PageHeader } from "../components/ui";
+import { copyText } from "../lib/clipboard";
 import { validName, KeystoreError } from "../lib/keystore";
 import { useBalance } from "../lib/chain";
+import { isPopup, openInTab } from "../lib/platform";
 import { formatTess, shortAddress } from "../lib/format";
 import { useWallet } from "../lib/session";
 import type { StoredAccount } from "../lib/storage";
@@ -285,6 +286,10 @@ type Source = "create" | "import" | "agent";
 export function AddAccount() {
   const wallet = useWallet();
   const navigate = useNavigate();
+  // File pickers and phrases to write down need a page that stays open.
+  useEffect(() => {
+    if (isPopup) openInTab("/accounts/add");
+  }, []);
   const [source, setSource] = useState<Source | null>(null);
   const [name, setName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);

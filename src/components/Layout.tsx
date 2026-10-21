@@ -1,9 +1,10 @@
-import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, Home, Lock, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useNodeStatus } from "../lib/chain";
 import { shortAddress } from "../lib/format";
 import { useTheme } from "../lib/hooks";
+import { isPopup, openInTab } from "../lib/platform";
 import { useWallet } from "../lib/session";
 import { CopyButton, Identicon } from "./links";
 import { cx } from "./ui";
@@ -204,7 +205,12 @@ export function Layout() {
             </div>
             <AccountSwitcher className="mb-4" />
             <SideNav onNavigate={() => setMenu(false)} />
-            <button onClick={wallet.lock} className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted hover:bg-surface-2">
+            {isPopup && (
+              <button onClick={() => openInTab(location.pathname)} className="mt-4 flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted hover:bg-surface-2">
+                <Maximize2 size={18} /> Open in a tab
+              </button>
+            )}
+            <button onClick={wallet.lock} className={cx("flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-medium text-muted hover:bg-surface-2", !isPopup && "mt-4")}>
               <Lock size={18} /> Lock the wallet
             </button>
           </div>

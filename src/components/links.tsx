@@ -85,9 +85,10 @@ export function AddressLink({ address, label, full, copy, className }: { address
   // Accounts of the wallet show their name.
   const own = accounts.find((a) => a.address === address)?.name;
   return (
-    <span className={cx("inline-flex min-w-0 max-w-full items-center gap-2", className)}>
+    <span className={cx("inline-flex min-w-0 max-w-full gap-2", full && !(label ?? own) ? "items-start" : "items-center", className)}>
       <Identicon address={address} size={20} />
-      <ExplorerLink path={`/account/${address}`} className="min-w-0 truncate font-mono text-[13px]">
+      {/* A full address wraps: it is shown to be checked, character by character. */}
+      <ExplorerLink path={`/account/${address}`} className={cx("min-w-0 font-mono text-[13px]", full ? "break-all" : "truncate")}>
         <span title={address}>{label ?? own ? <span className="font-sans text-sm font-medium">{label ?? own}</span> : full ? address : shortAddress(address)}</span>
       </ExplorerLink>
       {copy && <CopyButton value={address} />}

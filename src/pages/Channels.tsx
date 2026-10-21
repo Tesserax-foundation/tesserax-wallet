@@ -1,6 +1,5 @@
 import { Channels as ChannelCalls, CLOSE_SAFETY_BLOCKS, Voucher, type ChannelInfo, type Keypair, type TesseraxClient } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
-import { copyText } from "../lib/clipboard";
 import { ArrowDownLeft, ArrowUpRight, Check, Clock, Copy, FileSignature, Inbox, Plus, Zap } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { AddressInput, AmountInput, Button, ErrorText, parseAmount, TextArea } from "../components/forms";
@@ -10,6 +9,7 @@ import { PayWith } from "../components/PayWith";
 import { Sheet } from "../components/Sheet";
 import { useTransaction } from "../components/Transaction";
 import { Badge, Card, EmptyState, ErrorState, PageHeader, SkeletonRows } from "../components/ui";
+import { copyText } from "../lib/clipboard";
 import { channelsOf, normalizeAddress, useBalance, useBestBlock, useChain, useReceivedDelegations } from "../lib/chain";
 import { blocksDuration, formatTess } from "../lib/format";
 import { useWallet } from "../lib/session";

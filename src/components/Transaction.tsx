@@ -26,8 +26,14 @@ export interface TxRequest {
   /** Account signing; the active account by default. */
   account?: string;
   operation: (client: TesseraxClient, key: Keypair) => Promise<unknown>;
-  /** Called with the result of `operation` once included. */
-  onDone?: (result: unknown) => void;
+  /** Called with the result of `operation` and its inclusion, once included. */
+  onDone?: (result: unknown, outcome?: TxOutcome) => void;
+}
+
+/** How a transaction panel was closed: after its inclusion, or before, after a failure or not. */
+export interface TxClosed {
+  done: boolean;
+  error?: string;
 }
 
 type Phase =
@@ -71,12 +77,16 @@ export function TransactionProvider({ children }: { children: ReactNode }) {
   return (
     <TxContext.Provider value={open}>
       {children}
-      {current && <TransactionDialog key={current.id} request={current.request} onClose={close} />}
+      {current && <TransactionPanel key={current.id} request={current.request} onClose={close} />}
     </TxContext.Provider>
   );
 }
 
-function TransactionDialog({ request, onClose }: { request: TxRequest; onClose: () => void }) {
+/**
+ * The review of a transaction, then its progress: a dialog over the page, or `inline` in a page
+ * of its own, such as the approval window of the extension.
+ */
+export function TransactionPanel({ request, onClose: close, inline }: { request: TxRequest; onClose: (closed: TxClosed) => void; inline?: boolean }) {
   const wallet = useWallet();
   const chain = useChain();
   const queries = useQueryClient();
@@ -88,6 +98,7 @@ function TransactionDialog({ request, onClose }: { request: TxRequest; onClose: 
   const [passwordError, setPasswordError] = useState<string | null>(null);
   const account = wallet.accounts.find((a) => a.name === (request.account ?? wallet.active?.name));
   const dialog = useRef<HTMLDivElement>(null);
+  const onClose = () => close({ done: phase.step === "done", error: phase.step === "failed" ? phase.error : undefined });
 
   useEffect(() => {
     let cancelled = false;
@@ -110,7 +121,7 @@ function TransactionDialog({ request, onClose }: { request: TxRequest; onClose: 
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && phase.step !== "submitting" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase.step, onClose]);
+  });
 
   const sign = async () => {
     if (signing.current) return;
@@ -131,7 +142,7 @@ function TransactionDialog({ request, onClose }: { request: TxRequest; onClose: 
       const result = await request.operation(recording, key);
       setPhase({ step: "done", blockNumber: outcome?.blockNumber, txHash: outcome?.txHash });
       void queries.invalidateQueries();
-      request.onDone?.(result);
+      request.onDone?.(result, outcome);
     } catch (error) {
       setPhase({ step: "failed", error: explainError(error) });
     } finally {
@@ -139,119 +150,126 @@ function TransactionDialog({ request, onClose }: { request: TxRequest; onClose: 
     }
   };
 
+  const panel = (
+    <div
+      ref={dialog}
+      tabIndex={-1}
+      role={inline ? "region" : "dialog"}
+      aria-modal={inline ? undefined : true}
+      aria-label={request.title}
+      className={cx(
+        "w-full overflow-y-auto border border-line bg-surface outline-none",
+        inline ? "rounded-3xl" : "relative max-h-[92dvh] max-w-lg rounded-t-3xl shadow-2xl sm:rounded-3xl",
+      )}
+    >
+      <div className="flex items-center justify-between border-b border-line px-5 py-4">
+        <div className="flex items-center gap-2 font-semibold">
+          <ShieldCheck size={18} className="text-accent" />
+          {request.title}
+        </div>
+        {phase.step !== "submitting" && (
+          <button onClick={onClose} aria-label="Close" className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
+            <X size={18} />
+          </button>
+        )}
+      </div>
+
+      {phase.step === "review" && (
+        <div className="space-y-5 p-5">
+          {request.summary && <div className="text-center text-3xl font-semibold tracking-tight tabular">{request.summary}</div>}
+          <dl className="divide-y divide-line rounded-2xl border border-line bg-surface-2">
+            <Row label="From">{account ? <AddressLink address={account.address} label={account.name} /> : "—"}</Row>
+            {request.details.map(([label, value], i) => (
+              <Row key={i} label={label}>
+                {value}
+              </Row>
+            ))}
+            <Row label="Network fee">
+              {fee.planck != null ? (
+                <span className="tabular">{formatTess(fee.planck, 6)} TESS</span>
+              ) : fee.error ? (
+                <span className="text-danger">{fee.error}</span>
+              ) : (
+                <span className="inline-flex items-center gap-2 text-muted">
+                  <Loader2 size={14} className="animate-spin" /> Estimating
+                </span>
+              )}
+            </Row>
+          </dl>
+          {request.warning && <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{request.warning}</div>}
+          {wallet.settings.confirmWithPassword && (
+            <PasswordInput
+              label="Wallet password"
+              value={password}
+              onChange={(v) => {
+                setPassword(v);
+                setPasswordError(null);
+              }}
+              error={passwordError}
+              autoFocus
+            />
+          )}
+          <div className="flex gap-3">
+            <Button variant="secondary" className="flex-1" onClick={onClose}>
+              Cancel
+            </Button>
+            <Button className="flex-1" onClick={sign}>
+              Sign and send
+            </Button>
+          </div>
+          <p className="text-center text-xs text-muted">Signed in this browser with ML-DSA-87. Your key never leaves it.</p>
+        </div>
+      )}
+
+      {phase.step === "submitting" && (
+        <Status icon={<Loader2 size={40} className="animate-spin text-accent" />} title="Sending">
+          Waiting for a block to include the transaction, about 18 seconds.
+        </Status>
+      )}
+
+      {phase.step === "done" && (
+        <Status icon={<CircleCheck size={44} className="text-success" />} title="Done">
+          {phase.blockNumber !== undefined && (
+            <span className="block">
+              Included in block <BlockLink number={phase.blockNumber} />.
+            </span>
+          )}
+          {phase.txHash && (
+            <ExplorerLink path={`/extrinsic/${phase.txHash}`} className="mt-1 inline-block text-sm">
+              View the transaction
+            </ExplorerLink>
+          )}
+          <Button className="mt-6 w-full" onClick={onClose}>
+            Close
+          </Button>
+        </Status>
+      )}
+
+      {phase.step === "failed" && (
+        <Status icon={<CircleX size={44} className="text-danger" />} title="The transaction failed">
+          <span className="block text-danger">{phase.error}</span>
+          <div className="mt-6 flex gap-3">
+            <Button variant="secondary" className="flex-1" onClick={onClose}>
+              Close
+            </Button>
+            <Button className="flex-1" onClick={() => setPhase({ step: "review" })}>
+              Back
+            </Button>
+          </div>
+        </Status>
+      )}
+    </div>
+  );
+  if (inline) return panel;
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center p-0 sm:items-center sm:p-6" role="presentation">
       <div className="absolute inset-0 bg-black/50 backdrop-blur-sm" onClick={() => phase.step !== "submitting" && onClose()} />
-      <div
-        ref={dialog}
-        tabIndex={-1}
-        role="dialog"
-        aria-modal="true"
-        aria-label={request.title}
-        className="relative max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-3xl border border-line bg-surface shadow-2xl outline-none sm:rounded-3xl"
-      >
-        <div className="flex items-center justify-between border-b border-line px-5 py-4">
-          <div className="flex items-center gap-2 font-semibold">
-            <ShieldCheck size={18} className="text-accent" />
-            {request.title}
-          </div>
-          {phase.step !== "submitting" && (
-            <button onClick={onClose} aria-label="Close" className="flex size-8 items-center justify-center rounded-lg text-muted hover:bg-surface-2 hover:text-fg">
-              <X size={18} />
-            </button>
-          )}
-        </div>
-
-        {phase.step === "review" && (
-          <div className="space-y-5 p-5">
-            {request.summary && <div className="text-center text-3xl font-semibold tracking-tight tabular">{request.summary}</div>}
-            <dl className="divide-y divide-line rounded-2xl border border-line bg-surface-2">
-              <Row label="From">{account ? <AddressLink address={account.address} label={account.name} /> : "—"}</Row>
-              {request.details.map(([label, value], i) => (
-                <Row key={i} label={label}>
-                  {value}
-                </Row>
-              ))}
-              <Row label="Network fee">
-                {fee.planck != null ? (
-                  <span className="tabular">{formatTess(fee.planck, 6)} TESS</span>
-                ) : fee.error ? (
-                  <span className="text-danger">{fee.error}</span>
-                ) : (
-                  <span className="inline-flex items-center gap-2 text-muted">
-                    <Loader2 size={14} className="animate-spin" /> Estimating
-                  </span>
-                )}
-              </Row>
-            </dl>
-            {request.warning && <div className="rounded-xl border border-warning/30 bg-warning-soft px-4 py-3 text-sm text-warning">{request.warning}</div>}
-            {wallet.settings.confirmWithPassword && (
-              <PasswordInput
-                label="Wallet password"
-                value={password}
-                onChange={(v) => {
-                  setPassword(v);
-                  setPasswordError(null);
-                }}
-                error={passwordError}
-                autoFocus
-              />
-            )}
-            <div className="flex gap-3">
-              <Button variant="secondary" className="flex-1" onClick={onClose}>
-                Cancel
-              </Button>
-              <Button className="flex-1" onClick={sign}>
-                Sign and send
-              </Button>
-            </div>
-            <p className="text-center text-xs text-muted">Signed in this browser with ML-DSA-87. Your key never leaves it.</p>
-          </div>
-        )}
-
-        {phase.step === "submitting" && (
-          <Status icon={<Loader2 size={40} className="animate-spin text-accent" />} title="Sending">
-            Waiting for a block to include the transaction, about 18 seconds.
-          </Status>
-        )}
-
-        {phase.step === "done" && (
-          <Status icon={<CircleCheck size={44} className="text-success" />} title="Done">
-            {phase.blockNumber !== undefined && (
-              <span className="block">
-                Included in block <BlockLink number={phase.blockNumber} />.
-              </span>
-            )}
-            {phase.txHash && (
-              <ExplorerLink path={`/extrinsic/${phase.txHash}`} className="mt-1 inline-block text-sm">
-                View the transaction
-              </ExplorerLink>
-            )}
-            <Button className="mt-6 w-full" onClick={onClose}>
-              Close
-            </Button>
-          </Status>
-        )}
-
-        {phase.step === "failed" && (
-          <Status icon={<CircleX size={44} className="text-danger" />} title="The transaction failed">
-            <span className="block text-danger">{phase.error}</span>
-            <div className="mt-6 flex gap-3">
-              <Button variant="secondary" className="flex-1" onClick={onClose}>
-                Close
-              </Button>
-              <Button className="flex-1" onClick={() => setPhase({ step: "review" })}>
-                Back
-              </Button>
-            </div>
-          </Status>
-        )}
-      </div>
+      {panel}
     </div>
   );
 }
 
-function Row({ label, children }: { label: string; children: ReactNode }) {
+export function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 px-4 py-3 text-sm">
       <dt className="shrink-0 text-muted">{label}</dt>
@@ -260,7 +278,7 @@ function Row({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Status({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
+export function Status({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
   return (
     <div className={cx("flex flex-col items-center px-6 py-10 text-center")}>
       {icon}

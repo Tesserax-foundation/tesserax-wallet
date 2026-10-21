@@ -6,3 +6,5 @@ try {
 } catch {
   document.documentElement.classList.add("dark");
 }
+// The popup of the browser extension has a fixed size.
+if (new URLSearchParams(location.search).has("popup")) document.documentElement.classList.add("popup");

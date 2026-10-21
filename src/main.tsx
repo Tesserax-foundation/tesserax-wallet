@@ -2,16 +2,18 @@ import "@fontsource-variable/inter";
 import "@fontsource/jetbrains-mono/400.css";
 import "@fontsource/jetbrains-mono/500.css";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { StrictMode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { createBrowserRouter, Navigate, Outlet, RouterProvider, useLocation } from "react-router";
+import { createBrowserRouter, createHashRouter, Navigate, Outlet, RouterProvider, useLocation } from "react-router";
 import { Layout } from "./components/Layout";
 import { TransactionProvider } from "./components/Transaction";
 import "./index.css";
 import { ChainProvider } from "./lib/chain";
+import { isExtension, isPopup, openInTab } from "./lib/platform";
 import { useWallet, WalletProvider } from "./lib/session";
 import { Accounts, AddAccount } from "./pages/Accounts";
 import { Agents } from "./pages/Agents";
+import { Approve } from "./pages/Approve";
 import { Channels } from "./pages/Channels";
 import { Home, Receive, Send } from "./pages/Home";
 import { CreateWallet, ImportWallet, Restore, Unlock, Welcome } from "./pages/Onboarding";
@@ -30,17 +32,32 @@ function Splash() {
   );
 }
 
+/** The popup closes at the first click elsewhere: setting up a wallet happens in a tab. */
+function ContinueInTab({ path }: { path: string }) {
+  return (
+    <div className="flex min-h-dvh flex-col items-center justify-center gap-4 px-6 text-center">
+      <img src="/logo.png" alt="" className="size-16" />
+      <p className="text-sm text-muted">Set up Tesserax Wallet in a tab of its own, where it stays open while you write down your recovery phrase.</p>
+      <button onClick={() => openInTab(path)} className="h-11 w-full rounded-xl bg-accent text-sm font-semibold text-white">
+        Open Tesserax Wallet
+      </button>
+    </div>
+  );
+}
+
 /** Pages before the wallet exists: once it does, they lead home. */
 function Onboarding() {
   const wallet = useWallet();
+  const location = useLocation();
   if (!wallet.ready) return <Splash />;
+  if (isPopup && wallet.accounts.length === 0) return <ContinueInTab path={location.pathname} />;
   if (wallet.accounts.length > 0 && wallet.unlocked) return <Navigate to="/" replace />;
   if (wallet.accounts.length > 0) return <Navigate to="/" replace />;
   return <Outlet />;
 }
 
-/** The wallet itself: created and unlocked. */
-function Unlocked() {
+/** The wallet itself, created and unlocked: the pages of the wallet, or an approval window. */
+function Unlocked({ children }: { children: ReactNode }) {
   const wallet = useWallet();
   const location = useLocation();
   if (!wallet.ready) return <Splash />;
@@ -49,9 +66,7 @@ function Unlocked() {
   if (location.pathname === "/restore") return <Navigate to="/" replace />;
   return (
     <ChainProvider>
-      <TransactionProvider>
-        <Layout />
-      </TransactionProvider>
+      <TransactionProvider>{children}</TransactionProvider>
     </ChainProvider>
   );
 }
@@ -60,7 +75,8 @@ function NotFound() {
   return <Navigate to="/" replace />;
 }
 
-const router = createBrowserRouter([
+// Pages of the extension are files: their routes live in the hash.
+const router = (isExtension ? createHashRouter : createBrowserRouter)([
   {
     element: <Onboarding />,
     children: [
@@ -69,8 +85,24 @@ const router = createBrowserRouter([
       { path: "/import", element: <ImportWallet /> },
     ],
   },
+  ...(isExtension
+    ? [
+        {
+          element: (
+            <Unlocked>
+              <Outlet />
+            </Unlocked>
+          ),
+          children: [{ path: "/approve/:id", element: <Approve /> }],
+        },
+      ]
+    : []),
   {
-    element: <Unlocked />,
+    element: (
+      <Unlocked>
+        <Layout />
+      </Unlocked>
+    ),
     children: [
       { path: "/", element: <Home /> },
       { path: "/send", element: <Send /> },

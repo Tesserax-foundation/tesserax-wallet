@@ -1,7 +1,8 @@
 /**
  * The wallet session. Accounts are stored encrypted; once the wallet is unlocked, the password
  * and the keys of the accounts used stay in memory only, until the wallet locks: on demand, or
- * after some minutes without activity.
+ * after some minutes without activity. In the browser extension, whose popup closes with each
+ * click elsewhere, they stay in its session storage instead, in memory too (see `platform.ts`).
  *
  * Every account of the wallet is encrypted under the same password, the wallet password.
  */
@@ -9,6 +10,7 @@
 import { Keypair } from "@tesserax/sdk";
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { decrypt, encrypt, KeystoreError, parseKeystore, validName, type KeystoreFile } from "./keystore";
+import { isExtension, session, toBackground } from "./platform";
 import * as storage from "./storage";
 import type { Settings, StoredAccount } from "./storage";
 
@@ -59,20 +61,58 @@ export function WalletProvider({ children }: { children: ReactNode }) {
   // Secrets live in refs, outside of React state and its developer tools.
   const password = useRef<string | null>(null);
   const keys = useRef(new Map<string, Keypair>());
+  // In the extension, the secrets decrypted, kept in its session storage across its pages.
+  const secrets = useRef(new Map<string, string>());
+  const touched = useRef(0);
 
   useEffect(() => {
-    void Promise.all([storage.listAccounts(), storage.loadSettings()]).then(([accounts, settings]) => {
+    void (async () => {
+      const [accounts, settings, unlockedSession] = await Promise.all([storage.listAccounts(), storage.loadSettings(), session.load()]);
+      if (unlockedSession && accounts.length > 0) {
+        password.current = unlockedSession.password;
+        for (const [name, secret] of Object.entries(unlockedSession.secrets)) {
+          secrets.current.set(name, secret);
+          keys.current.set(name, Keypair.fromUri(secret));
+        }
+        setUnlocked(true);
+      }
       setAccounts(accounts);
       setSettings(settings);
       setReady(true);
-    });
+    })();
+  }, []);
+
+  const forget = useCallback(() => {
+    password.current = null;
+    keys.current.clear();
+    secrets.current.clear();
+    setUnlocked(false);
   }, []);
 
   const lock = useCallback(() => {
-    password.current = null;
-    keys.current.clear();
-    setUnlocked(false);
-  }, []);
+    forget();
+    void session.clear();
+  }, [forget]);
+
+  // Another page of the extension, or its background after inactivity, locked the wallet.
+  useEffect(() => session.onCleared(forget), [forget]);
+
+  /** Keep the unlocked wallet for the other pages of the extension. */
+  const persist = () => {
+    if (!isExtension || password.current == null) return;
+    touched.current = Date.now();
+    void session.save({ password: password.current, secrets: Object.fromEntries(secrets.current), lastActive: touched.current });
+  };
+
+  const remember = (name: string, secret: string) => {
+    const key = Keypair.fromUri(secret);
+    keys.current.set(name, key);
+    if (isExtension) {
+      secrets.current.set(name, secret);
+      persist();
+    }
+    return key;
+  };
 
   // Lock after `autoLockMinutes` without activity.
   useEffect(() => {
@@ -81,6 +121,8 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     const arm = () => {
       clearTimeout(timer);
       timer = setTimeout(lock, settings.autoLockMinutes * 60_000);
+      // The background locks the extension from the last activity it knows of.
+      if (isExtension && Date.now() - touched.current > 15_000) persist();
     };
     arm();
     for (const event of ACTIVITY_EVENTS) window.addEventListener(event, arm, { passive: true });
@@ -130,6 +172,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       const file = await encrypt(name, secret, newPassword);
       await store(name, file, backedUp);
       password.current = newPassword;
+      remember(name, secret);
       await updateSettings({ activeAccount: name });
       setUnlocked(true);
     },
@@ -139,7 +182,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       if (!account) throw new Error("the wallet has no account");
       const secret = await decrypt(account.file, candidate);
       password.current = candidate;
-      keys.current.set(account.name, Keypair.fromUri(secret));
+      remember(account.name, secret);
       setUnlocked(true);
     },
 
@@ -162,9 +205,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       if (!account) throw new Error(`no account named ${name}`);
       const cached = keys.current.get(account.name);
       if (cached) return cached;
-      const key = Keypair.fromUri(await decrypt(account.file, requirePassword()));
-      keys.current.set(account.name, key);
-      return key;
+      return remember(account.name, await decrypt(account.file, requirePassword()));
     },
 
     async addAccount(name, secret, backedUp) {
@@ -196,6 +237,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
         keys.current.delete(name);
         keys.current.set(next, key);
       }
+      const secret = secrets.current.get(name);
+      if (secret) {
+        secrets.current.delete(name);
+        secrets.current.set(next, secret);
+        persist();
+      }
       if (settings.activeAccount === name) await updateSettings({ activeAccount: next });
       await refresh();
     },
@@ -203,6 +250,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
     async removeAccount(name) {
       await storage.deleteAccount(name);
       keys.current.delete(name);
+      if (secrets.current.delete(name)) persist();
       const remaining = accounts.filter((a) => a.name !== name);
       if (settings.activeAccount === name) await updateSettings({ activeAccount: remaining[0]?.name });
       await refresh();
@@ -230,12 +278,14 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       // All accounts or none: a failure leaves the previous password.
       await storage.replaceAccounts(reencrypted);
       password.current = next;
+      persist();
       await refresh();
     },
 
     async reset() {
       lock();
       await storage.wipe();
+      if (isExtension) await toBackground({ type: "connections:clear" });
       setAccounts([]);
       setSettings(storage.defaultSettings());
     },

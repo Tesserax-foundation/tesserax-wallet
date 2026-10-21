@@ -1,6 +1,5 @@
 import type { Keypair, TesseraxClient } from "@tesserax/sdk";
 import { ArrowDownLeft, ArrowUpRight, Bot, CircleAlert, Coins, Copy, Lock, ScrollText, ShieldAlert, Users, Zap } from "lucide-react";
-import { copyText } from "../lib/clipboard";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { encode } from "uqr";
@@ -10,6 +9,7 @@ import { Page } from "../components/Layout";
 import { Amount as AmountText, AddressLink, ExplorerLink, Identicon, TimeAgo } from "../components/links";
 import { useTransaction } from "../components/Transaction";
 import { Badge, Card, CardHeader, cx, EmptyState, ErrorState, Skeleton, SkeletonRows } from "../components/ui";
+import { copyText } from "../lib/clipboard";
 import { normalizeAddress, useBalance, useReceivedDelegations } from "../lib/chain";
 import { callLabel, formatTess, humanize } from "../lib/format";
 import { historyAvailable, useActivity } from "../lib/history";

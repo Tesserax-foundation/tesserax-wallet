@@ -1,7 +1,7 @@
 # Tesserax Wallet
 
-The web wallet of [Tesserax](https://github.com/Wayleyy/tesserax): post-quantum accounts for
-people and AI agents.
+The wallet of [Tesserax](https://github.com/Wayleyy/tesserax), on the web and as a browser
+extension: post-quantum accounts for people and AI agents.
 
 - **Accounts**: create an account and its 24-word recovery phrase, import one from a phrase or
   from a keystore file of the command line wallet, back it up, rename, export, remove. Several
@@ -40,6 +40,69 @@ Every operation can be paid from an owner's budget when the account holds a dele
 - Dependencies are pinned. Cryptography comes from the audited `@noble` libraries and the
   Tesserax SDK.
 
+## Browser extension
+
+The same wallet, in the toolbar of Chromium browsers (Chrome, Brave, Edge, Arc) and Firefox,
+with a provider for web applications: `window.tesserax`.
+
+```bash
+npm run build:extension   # dist-extension/chrome, dist-extension/firefox and their zips
+```
+
+- Chrome: `chrome://extensions`, enable the developer mode, Load unpacked, `dist-extension/chrome`.
+- Firefox: `about:debugging`, This Firefox, Load Temporary Add-on, `dist-extension/firefox/manifest.json`.
+
+What the extension adds:
+
+- **Popup** of 360 by 600 pixels, and the full wallet in a tab. Creating or importing a wallet
+  opens a tab: the popup closes at the first click elsewhere.
+- **Session**: the popup closes often, so once unlocked the wallet password and the secrets used
+  stay in the session storage of the extension, in memory, readable only by its own pages and
+  background, never by web pages or content scripts, and cleared when the browser quits. The
+  background locks the wallet after the inactivity set in the settings; locking in one page
+  locks them all.
+- **Connected sites**: a site sees nothing until the user connects it, then only the accounts
+  chosen. Settings list the sites and disconnect them.
+- **Approval window** for every signature a site asks for: its origin, what will be signed and,
+  for transactions, the same review with the exact fee as in the wallet.
+- Permissions: `storage` and `alarms`. The content script runs on HTTPS pages, and on
+  `localhost` for development, to provide `window.tesserax`; it carries messages only.
+
+### Provider API
+
+```ts
+const [account] = await window.tesserax.request({ method: "tesserax_requestAccounts" });
+const { txHash, blockNumber } = await window.tesserax.request({
+  method: "tesserax_transfer",
+  params: { from: account.address, to: "te…", amount: "1.5" },
+});
+window.tesserax.on("accountsChanged", (accounts) => {});
+```
+
+Amounts are decimal strings of TESS. Transactions resolve once a block includes them, with
+`txHash`, `blockHash` and `blockNumber`. `owner` makes the account pay through the delegation it
+holds from that owner, as `--owner` in the command line wallet.
+
+| Method | Parameters | Result |
+|---|---|---|
+| `tesserax_requestAccounts` | | Connected accounts `{ address, name }[]`, after the user's approval the first time |
+| `tesserax_accounts` | | Connected accounts, `[]` if none |
+| `tesserax_disconnect` | | `null` |
+| `tesserax_transfer` | `from`, `to`, `amount`, `owner?` | Inclusion |
+| `tesserax_payAgent` | `from`, `agent`, `amount`, `owner?` | Inclusion |
+| `tesserax_openChannel` | `from`, `payee`, `deposit`, `owner?` | Inclusion and `channel`, the id |
+| `tesserax_signVoucher` | `from`, `channel`, `amount` (total owed) | `{ voucher }`, the value of a `Tesserax-Voucher` header |
+| `tesserax_signMessage` | `from`, `message` (text, 4096 characters at most) | `{ address, publicKey, signature }`, hexadecimal |
+
+A message is signed with ML-DSA-87 over its UTF-8 bytes in the context `tesserax-message`, so a
+message signature is never valid as a transaction or a voucher. A server checks it with the SDK:
+`verify(publicKey, message, signature, new TextEncoder().encode("tesserax-message"))`, and that
+the address is the one of the public key.
+
+Errors carry a `code`: 4001 rejected by the user, 4100 site or account not connected, 4200
+unknown method, -32602 invalid parameters, -32002 another request of the site waits for
+approval.
+
 ## Configuration
 
 Copy `.env.example` to `.env`:
@@ -58,7 +121,7 @@ Node.js 22 or later.
 ```bash
 npm install
 npm run dev       # http://localhost:5174
-npm test          # keystore compatibility with the command line wallet
+npm test          # keystore compatibility with the command line wallet, extension background
 npm run build     # type check and production build in dist/
 npm run preview   # serve the production build, with its security policy
 ```

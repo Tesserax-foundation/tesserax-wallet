@@ -1,12 +1,17 @@
 import { TesseraxClient } from "@tesserax/sdk";
-import { Globe, Info, KeyRound, Lock, Network, RotateCcw, Settings as SettingsIcon, ShieldCheck, TriangleAlert } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Globe, Info, KeyRound, Link2, Lock, Network, RotateCcw, Settings as SettingsIcon, ShieldCheck, TriangleAlert } from "lucide-react";
 import { useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Button, ErrorText, PasswordInput, Select, StrengthMeter, TextInput, Toggle, passwordStrength } from "../components/forms";
 import { network, Page } from "../components/Layout";
 import { Sheet } from "../components/Sheet";
 import { Card, CardHeader, Field, Fields, PageHeader, Skeleton } from "../components/ui";
+import { AddressLink } from "../components/links";
+import type { Connection } from "../extension/protocol";
 import { useNodeStatus } from "../lib/chain";
+import { formatDate } from "../lib/format";
+import { isExtension, toBackground } from "../lib/platform";
 import { KeystoreError } from "../lib/keystore";
 import { useWallet } from "../lib/session";
 import { defaultSettings } from "../lib/storage";
@@ -142,6 +147,8 @@ export function Settings() {
         </div>
       </Section>
 
+      {isExtension && <ConnectedSites />}
+
       <Section title="About" icon={<Info size={16} />}>
         <div className="-mx-4 -my-5 sm:-mx-5">
           <Fields>
@@ -259,5 +266,46 @@ function ResetSheet({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         </Button>
       </div>
     </Sheet>
+  );
+}
+
+/** Sites connected to the extension, and the accounts each may use. */
+function ConnectedSites() {
+  const queries = useQueryClient();
+  const { data } = useQuery({ queryKey: ["connections"], queryFn: () => toBackground<Record<string, Connection>>({ type: "connections:list" }) });
+  const sites = Object.entries(data ?? {}).sort(([, a], [, b]) => b.connectedAt - a.connectedAt);
+  return (
+    <Section title="Connected sites" icon={<Link2 size={16} />}>
+      {sites.length === 0 ? (
+        <p className="text-sm text-muted">No site is connected. A site asks to connect through the wallet; you choose which accounts it sees.</p>
+      ) : (
+        <ul className="-my-2 divide-y divide-line">
+          {sites.map(([origin, connection]) => (
+            <li key={origin} className="flex items-start justify-between gap-3 py-3">
+              <div className="min-w-0">
+                <div className="truncate font-mono text-sm font-medium">{origin}</div>
+                <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted">
+                  {connection.accounts.map((address) => (
+                    <AddressLink key={address} address={address} />
+                  ))}
+                </div>
+                <div className="mt-1 text-xs text-faint">Since {formatDate(new Date(connection.connectedAt))}</div>
+              </div>
+              <Button
+                variant="secondary"
+                size="sm"
+                className="shrink-0 text-danger"
+                onClick={async () => {
+                  await toBackground({ type: "connections:disconnect", origin });
+                  await queries.invalidateQueries({ queryKey: ["connections"] });
+                }}
+              >
+                Disconnect
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
   );
 }
