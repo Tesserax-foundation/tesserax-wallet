@@ -9,7 +9,7 @@ import { Layout } from "./components/Layout";
 import { TransactionProvider } from "./components/Transaction";
 import "./index.css";
 import { ChainProvider } from "./lib/chain";
-import { isExtension, isPopup, openInTab } from "./lib/platform";
+import { isDesktop, isExtension, isPopup, openExternal, openInTab } from "./lib/platform";
 import { useWallet, WalletProvider } from "./lib/session";
 import { Accounts, AddAccount } from "./pages/Accounts";
 import { Agents } from "./pages/Agents";
@@ -75,8 +75,8 @@ function NotFound() {
   return <Navigate to="/" replace />;
 }
 
-// Pages of the extension are files: their routes live in the hash.
-const router = (isExtension ? createHashRouter : createBrowserRouter)([
+// Pages of the extension and of the desktop application are files: their routes live in the hash.
+const router = (isExtension || isDesktop ? createHashRouter : createBrowserRouter)([
   {
     element: <Onboarding />,
     children: [
@@ -119,6 +119,17 @@ const router = (isExtension ? createHashRouter : createBrowserRouter)([
     ],
   },
 ]);
+
+// The desktop window shows the wallet only: links out, such as to the explorer, open in the browser.
+if (isDesktop) {
+  document.addEventListener("click", (event) => {
+    const link = (event.target as Element | null)?.closest?.("a[href]") as HTMLAnchorElement | null;
+    if (link && /^https?:/.test(link.href) && new URL(link.href).origin !== location.origin) {
+      event.preventDefault();
+      void openExternal(link.href);
+    }
+  });
+}
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

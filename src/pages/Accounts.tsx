@@ -10,7 +10,7 @@ import { Badge, Card, cx, PageHeader } from "../components/ui";
 import { copyText } from "../lib/clipboard";
 import { validName, KeystoreError } from "../lib/keystore";
 import { useBalance } from "../lib/chain";
-import { isPopup, openInTab } from "../lib/platform";
+import { isPopup, openInTab, saveFile } from "../lib/platform";
 import { formatTess, shortAddress } from "../lib/format";
 import { useWallet } from "../lib/session";
 import type { StoredAccount } from "../lib/storage";
@@ -44,15 +44,7 @@ export function Accounts() {
 }
 
 /** Save the encrypted keystore file of an account, as the command line wallet stores it. */
-function downloadKeystore(account: StoredAccount) {
-  const blob = new Blob([JSON.stringify(account.file, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = `${account.name}.json`;
-  link.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+const downloadKeystore = (account: StoredAccount) => saveFile(`${account.name}.json`, JSON.stringify(account.file, null, 2));
 
 function AccountRow({ account: a, onAction }: { account: StoredAccount; onAction: (action: Action) => void }) {
   const wallet = useWallet();
@@ -126,7 +118,7 @@ function AccountRow({ account: a, onAction }: { account: StoredAccount; onAction
             {!isActive && item(<Check size={15} />, "Use this account", () => void wallet.setActive(a.name))}
             {item(<Pencil size={15} />, "Rename", () => onAction("rename"))}
             {item(<Eye size={15} />, a.backedUp ? "Show the recovery phrase" : "Back up the recovery phrase", () => onAction(a.backedUp ? "reveal" : "backup"))}
-            {item(<Download size={15} />, "Download the keystore file", () => downloadKeystore(a))}
+            {item(<Download size={15} />, "Download the keystore file", () => void downloadKeystore(a))}
             {wallet.accounts.length > 1 && item(<Trash2 size={15} />, "Remove from this wallet", () => onAction("remove"), true)}
           </div>
         )}

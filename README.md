@@ -1,7 +1,7 @@
 # Tesserax Wallet
 
-The wallet of [Tesserax](https://github.com/Wayleyy/tesserax), on the web and as a browser
-extension: post-quantum accounts for people and AI agents.
+The wallet of [Tesserax](https://github.com/Wayleyy/tesserax), on the web, as a browser
+extension and as a desktop application: post-quantum accounts for people and AI agents.
 
 - **Accounts**: create an account and its 24-word recovery phrase, import one from a phrase or
   from a keystore file of the command line wallet, back it up, rename, export, remove. Several
@@ -102,6 +102,31 @@ the address is the one of the public key.
 Errors carry a `code`: 4001 rejected by the user, 4100 site or account not connected, 4200
 unknown method, -32602 invalid parameters, -32002 another request of the site waits for
 approval.
+
+## Desktop application
+
+The same wallet in a window of its own, for macOS, Windows and Linux, built with
+[Tauri](https://tauri.app): the system web view shows the pages of the wallet, a small Rust
+program holds the window.
+
+```bash
+npm run desktop          # development, with the pages served on http://localhost:5175
+npm run build:desktop    # installers in src-tauri/target/release/bundle
+```
+
+It needs Rust, and on Linux the WebKitGTK libraries (`libwebkit2gtk-4.1-dev`). Pushing a tag
+`v*` builds the installers of every system in GitHub Actions and attaches them to a draft
+release.
+
+- Keys stay in the pages, as in the browser: encrypted in the storage of the web view, in memory
+  once unlocked, gone when the window closes or locks. The Rust side never sees them.
+- The window shows the wallet only: it cannot navigate elsewhere, and links, such as to the
+  explorer, open in the browser of the system.
+- Keystore files are saved where the user chooses, readable by their owner only, as the command
+  line wallet writes them.
+- The same strict content security policy as on the web, set by Tauri; the pages can only open
+  links in the browser and save keystore files, through the native side.
+- One instance at a time; the window remembers its size and position.
 
 ## Configuration
 

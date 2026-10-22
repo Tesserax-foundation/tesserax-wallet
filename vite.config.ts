@@ -28,10 +28,20 @@ const csp = (): Plugin => ({
   transformIndexHtml: (html) => html.replace("<head>", `<head>\n    <meta http-equiv="Content-Security-Policy" content="${CSP}" />`),
 });
 
-export default defineConfig({
-  plugins: [react(), tailwindcss(), csp()],
-  server: { port: 5174 },
-  // Assets are files, never inlined as data: URLs, which the policy refuses for fonts.
-  build: { sourcemap: false, target: "es2022", assetsInlineLimit: 0, chunkSizeWarningLimit: 1000 },
-  worker: { format: "es" },
+/**
+ * `--mode desktop` builds the pages of the desktop application: Tauri sets their security policy
+ * itself, with the hashes of the scripts it injects, from `src-tauri/tauri.conf.json`.
+ */
+export default defineConfig(({ mode }) => {
+  const desktop = mode === "desktop";
+  return {
+    plugins: [react(), tailwindcss(), ...(desktop ? [] : [csp()])],
+    define: desktop ? { "import.meta.env.VITE_TARGET": JSON.stringify("desktop") } : {},
+    server: { port: desktop ? 5175 : 5174, strictPort: desktop },
+    // Tauri prints in the same terminal: its output stays.
+    clearScreen: !desktop,
+    // Assets are files, never inlined as data: URLs, which the policy refuses for fonts.
+    build: { sourcemap: false, target: "es2022", assetsInlineLimit: 0, chunkSizeWarningLimit: 1000, outDir: desktop ? "dist-desktop" : "dist" },
+    worker: { format: "es" },
+  };
 });

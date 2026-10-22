@@ -1,5 +1,5 @@
 /**
- * What differs between the web wallet and the browser extension.
+ * What differs between the web wallet, the browser extension and the desktop application.
  *
  * In the extension, the popup closes whenever it loses focus: the unlocked session lives in the
  * session storage of the extension, which the browser keeps in memory only, never on disk, and
@@ -11,6 +11,9 @@
 export const extensionApi: any = (globalThis as any).browser ?? (globalThis as any).chrome;
 
 export const isExtension = import.meta.env.VITE_TARGET === "extension";
+
+/** The desktop application: the wallet in a Tauri window. */
+export const isDesktop = import.meta.env.VITE_TARGET === "desktop";
 
 /** The page is the popup of the toolbar button, 360 by 600 pixels. */
 export const isPopup = isExtension && typeof location !== "undefined" && new URLSearchParams(location.search).has("popup");
@@ -60,4 +63,25 @@ export async function toBackground<T = unknown>(message: Record<string, unknown>
   if (!response) throw new Error("the wallet background does not answer");
   if (response.error) throw new Error(response.error.message);
   return response.result as T;
+}
+
+/** Open `url` in the default browser of the system, out of the desktop application. */
+export async function openExternal(url: string) {
+  const { openUrl } = await import("@tauri-apps/plugin-opener");
+  await openUrl(url);
+}
+
+/** Save `contents` as `fileName` where the user chooses: false when the user cancels. */
+export async function saveFile(fileName: string, contents: string): Promise<boolean> {
+  if (isDesktop) {
+    const { invoke } = await import("@tauri-apps/api/core");
+    return invoke<boolean>("save_keystore", { fileName, contents });
+  }
+  const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  return true;
 }
