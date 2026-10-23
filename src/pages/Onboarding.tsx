@@ -6,6 +6,7 @@ import { Button, ErrorText, PasswordInput, StrengthMeter, TextArea, TextInput, p
 import { Identicon } from "../components/links";
 import { cx } from "../components/ui";
 import { decrypt, KeystoreError, parseKeystore, validName } from "../lib/keystore";
+import { cleanSecret, phraseProblem } from "../lib/phrase";
 import { useWallet } from "../lib/session";
 
 /** Full-screen frame of the pages shown before the wallet opens. */
@@ -261,11 +262,13 @@ export function ImportSource({ onSecret, onFile }: { onSecret: (secret: string) 
   const input = useRef<HTMLInputElement>(null);
   const preview = useMemo(() => {
     try {
-      return phrase.trim() ? Keypair.fromUri(phrase.trim()).address : null;
+      return phrase.trim() ? Keypair.fromUri(cleanSecret(phrase)).address : null;
     } catch {
       return null;
     }
   }, [phrase]);
+  // Once the phrase looks complete, say what is wrong with it.
+  const problem = !preview && cleanSecret(phrase).split(" ").length >= 12 ? phraseProblem(phrase) : null;
   return (
     <div className="space-y-5">
       <div className="grid grid-cols-2 gap-1 rounded-xl bg-surface-3 p-1">
@@ -280,12 +283,12 @@ export function ImportSource({ onSecret, onFile }: { onSecret: (secret: string) 
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            if (!preview) setError("Not a valid recovery phrase");
-            else onSecret(phrase.trim().replace(/\s+/g, " "));
+            if (!preview) setError(phraseProblem(phrase) ?? "Not a valid recovery phrase");
+            else onSecret(cleanSecret(phrase));
           }}
           className="space-y-4"
         >
-          <TextArea label="Recovery phrase" value={phrase} onChange={(e) => { setPhrase(e.target.value); setError(null); }} placeholder="24 words separated by spaces" spellCheck={false} autoComplete="off" autoFocus error={error} rows={4} />
+          <TextArea label="Recovery phrase" value={phrase} onChange={(e) => { setPhrase(e.target.value); setError(null); }} placeholder="24 words separated by spaces" spellCheck={false} autoComplete="off" autoFocus error={error ?? problem} rows={4} />
           {preview && (
             <div className="flex items-center gap-2 rounded-xl bg-surface-2 px-3 py-2.5 text-sm">
               <Identicon address={preview} size={20} />
