@@ -4,7 +4,7 @@
  * a block includes it.
  */
 
-import type { Keypair, TesseraxClient, TxOutcome } from "@tesserax/sdk";
+import type { Amount, Keypair, TesseraxClient, TxOutcome } from "@tesserax/sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, CircleX, Loader2, ShieldCheck, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -26,6 +26,9 @@ export interface TxRequest {
   /** Account signing; the active account by default. */
   account?: string;
   operation: (client: TesseraxClient, key: Keypair) => Promise<unknown>;
+  /** The fee, for a transaction whose fee is not the one of a signed transaction, such as a
+   * private transfer paid from the private balance. */
+  fee?: (client: TesseraxClient) => Promise<Amount>;
   /** Called with the result of `operation` and its inclusion, once included. */
   onDone?: (result: unknown, outcome?: TxOutcome) => void;
 }
@@ -105,7 +108,7 @@ export function TransactionPanel({ request, onClose: close, inline }: { request:
     void (async () => {
       try {
         const key = await wallet.keypair(account?.name);
-        const fee = await estimateFee(chain.client, (c) => request.operation(c, key), key);
+        const fee = request.fee ? await request.fee(chain.client) : await estimateFee(chain.client, (c) => request.operation(c, key), key);
         if (!cancelled) setFee({ planck: fee.planck.toString() });
       } catch (error) {
         if (!cancelled) setFee({ error: explainError(error) });
@@ -140,6 +143,8 @@ export function TransactionPanel({ request, onClose: close, inline }: { request:
       const recording: TesseraxClient = Object.create(chain.client);
       recording.submit = async (tx, signer) => (outcome = await chain.client.submit(tx, signer));
       const result = await request.operation(recording, key);
+      // Transactions submitted without signer return their inclusion.
+      if (!outcome && result && typeof result === "object" && "blockNumber" in result) outcome = result as TxOutcome;
       setPhase({ step: "done", blockNumber: outcome?.blockNumber, txHash: outcome?.txHash });
       void queries.invalidateQueries();
       request.onDone?.(result, outcome);

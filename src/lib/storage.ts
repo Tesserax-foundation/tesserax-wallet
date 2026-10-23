@@ -32,15 +32,27 @@ export const defaultSettings = (): Settings => ({
 const DATABASE = "tesserax-wallet";
 const ACCOUNTS = "accounts";
 const SETTINGS = "settings";
+/** Shielded accounts: their notes and the note tree, encrypted with a key of the account. */
+const SHIELDED = "shielded";
+
+export interface StoredShielded {
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+  /** Last block read from the node. */
+  block: number;
+}
 
 let database: Promise<IDBDatabase> | undefined;
 
 function open(): Promise<IDBDatabase> {
   database ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 1);
-    request.onupgradeneeded = () => {
-      request.result.createObjectStore(ACCOUNTS, { keyPath: "name" });
-      request.result.createObjectStore(SETTINGS);
+    const request = indexedDB.open(DATABASE, 2);
+    request.onupgradeneeded = (event) => {
+      if (event.oldVersion < 1) {
+        request.result.createObjectStore(ACCOUNTS, { keyPath: "name" });
+        request.result.createObjectStore(SETTINGS);
+      }
+      if (event.oldVersion < 2) request.result.createObjectStore(SHIELDED);
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("cannot open the wallet storage"));
@@ -81,6 +93,10 @@ export async function replaceAccounts(accounts: StoredAccount[]): Promise<void> 
     transaction.onabort = () => reject(transaction.error ?? new Error("storage transaction aborted"));
   });
 }
+
+export const getShielded = (address: string) => run<StoredShielded | undefined>(SHIELDED, "readonly", (s) => s.get(address));
+
+export const putShielded = (address: string, state: StoredShielded) => run(SHIELDED, "readwrite", (s) => s.put(state, address));
 
 export async function loadSettings(): Promise<Settings> {
   const saved = await run<Partial<Settings> | undefined>(SETTINGS, "readonly", (s) => s.get("settings"));

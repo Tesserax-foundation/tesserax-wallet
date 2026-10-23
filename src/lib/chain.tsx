@@ -3,7 +3,7 @@
 
 import { accountIdOf, Amount, Channels, formatAddress, MORTALITY, mlDsaTxCreator, parseAddress, Tasks, TesseraxClient, type Delegation, type Keypair } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
-import { createContext, useContext, useEffect, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { useWallet } from "./session";
 
 export type Operation = (client: TesseraxClient) => Promise<unknown>;
@@ -25,11 +25,15 @@ export function useChain(): Chain {
 
 export function ChainProvider({ children }: { children: ReactNode }) {
   const { settings } = useWallet();
-  const chain = useMemo(() => {
+  const [chain, setChain] = useState<Chain | null>(null);
+  // The connection is opened and closed by the same effect: an effect run twice, as in strict
+  // mode, never leaves the application with a closed connection.
+  useEffect(() => {
     const client = new TesseraxClient(settings.nodeUrl);
-    return { client, tasks: new Tasks(client), channels: new Channels(client), url: settings.nodeUrl };
+    setChain({ client, tasks: new Tasks(client), channels: new Channels(client), url: settings.nodeUrl });
+    return () => client.destroy();
   }, [settings.nodeUrl]);
-  useEffect(() => () => chain.client.destroy(), [chain]);
+  if (!chain || chain.url !== settings.nodeUrl) return null;
   return <ChainContext.Provider value={chain}>{children}</ChainContext.Provider>;
 }
 

@@ -9,7 +9,7 @@ import { defineConfig, type Plugin } from "vite";
  */
 export const CSP = [
   "default-src 'none'",
-  "script-src 'self'",
+  "script-src 'self' 'wasm-unsafe-eval'",
   "worker-src 'self'",
   "style-src 'self'",
   "font-src 'self'",

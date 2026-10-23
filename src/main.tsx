@@ -16,6 +16,7 @@ import { Agents } from "./pages/Agents";
 import { Approve } from "./pages/Approve";
 import { Channels } from "./pages/Channels";
 import { Home, Receive, Send } from "./pages/Home";
+import { Private } from "./pages/Private";
 import { CreateWallet, ImportWallet, Restore, Unlock, Welcome } from "./pages/Onboarding";
 import { Settings } from "./pages/Settings";
 import { TaskDetail, Tasks } from "./pages/Tasks";
@@ -107,6 +108,7 @@ const router = (isExtension || isDesktop ? createHashRouter : createBrowserRoute
       { path: "/", element: <Home /> },
       { path: "/send", element: <Send /> },
       { path: "/receive", element: <Receive /> },
+      { path: "/private", element: <Private /> },
       { path: "/agents", element: <Agents /> },
       { path: "/channels", element: <Channels /> },
       { path: "/tasks", element: <Tasks /> },

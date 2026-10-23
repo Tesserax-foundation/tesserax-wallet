@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useNodeStatus } from "../lib/chain";
@@ -15,6 +15,7 @@ const nav = [
   { to: "/", label: "Home", icon: Home, end: true },
   { to: "/send", label: "Send", icon: ArrowUpRight },
   { to: "/receive", label: "Receive", icon: ArrowDownLeft },
+  { to: "/private", label: "Private", icon: EyeOff },
   { to: "/agents", label: "AI agents", icon: Bot },
   { to: "/tasks", label: "Task market", icon: Users },
   { to: "/channels", label: "Payment channels", icon: Zap },
