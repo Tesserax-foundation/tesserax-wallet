@@ -1,5 +1,5 @@
 import type { Keypair, TesseraxClient } from "@tesserax/sdk";
-import { ArrowDownLeft, ArrowUpRight, Bot, CircleAlert, Coins, Copy, Lock, ScrollText, ShieldAlert, Users, Zap } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Bot, CircleAlert, Coins, Copy, Droplets, Lock, ScrollText, ShieldAlert, Users, Zap } from "lucide-react";
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router";
 import { encode } from "uqr";
@@ -14,6 +14,9 @@ import { normalizeAddress, useBalance, useReceivedDelegations } from "../lib/cha
 import { callLabel, formatTess, humanize } from "../lib/format";
 import { historyAvailable, useActivity } from "../lib/history";
 import { useWallet } from "../lib/session";
+
+/** Faucet of the testnet, which gives test TESS; none on the mainnet. */
+const faucetUrl = (import.meta.env.VITE_FAUCET_URL as string | undefined)?.replace(/\/$/, "");
 
 function BalanceCard() {
   const { active } = useWallet();
@@ -61,6 +64,16 @@ function BalanceCard() {
           <Link to="/receive" className="inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-line bg-surface px-5 text-sm font-semibold hover:border-line-strong">
             <ArrowDownLeft size={18} /> Receive
           </Link>
+          {faucetUrl && active && (
+            <a
+              href={`${faucetUrl}/#${active.address}`}
+              target="_blank"
+              rel="noreferrer noopener"
+              className="col-span-2 inline-flex h-11 items-center justify-center gap-2 rounded-xl border border-line bg-surface px-5 text-sm font-semibold hover:border-line-strong sm:col-span-1"
+            >
+              <Droplets size={18} /> Get test TESS
+            </a>
+          )}
         </div>
       </div>
     </div>
