@@ -1,15 +1,13 @@
 import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
-import { useNodeStatus } from "../lib/chain";
+import { useChain, useNodeStatus, WrongChain } from "../lib/chain";
 import { shortAddress } from "../lib/format";
 import { useTheme } from "../lib/hooks";
 import { isPopup, openInTab } from "../lib/platform";
 import { useWallet } from "../lib/session";
 import { CopyButton, Identicon } from "./links";
 import { cx } from "./ui";
-
-export const network = (import.meta.env.VITE_NETWORK as string | undefined) ?? "Development";
 
 const nav = [
   { to: "/", label: "Home", icon: Home, end: true },
@@ -41,14 +39,34 @@ export function Logo({ compact }: { compact?: boolean }) {
 }
 
 function NodeStatus() {
+  const { network } = useChain();
   const { data, error, isLoading } = useNodeStatus();
   const ok = Boolean(data) && !error;
   return (
-    <Link to="/settings" title={error ? (error as Error).message : data ? `Block #${data.bestBlock.toLocaleString("en-US")}` : "Connecting"} className="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface px-2.5 py-1 text-xs font-medium text-muted">
+    <Link
+      to="/settings"
+      title={error ? (error as Error).message : data ? `Block #${data.bestBlock.toLocaleString("en-US")}` : "Connecting"}
+      className={cx("inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium", network.test ? "border-warning/40 bg-warning-soft text-warning" : "border-line bg-surface text-muted")}
+    >
       <span className={cx("size-1.5 rounded-full", isLoading ? "animate-pulse bg-warning" : ok ? "bg-success shadow-[0_0_6px_var(--success)]" : "bg-danger")} />
-      {network}
+      {network.name}
       {data && <span className="hidden tabular text-faint sm:inline">#{data.bestBlock.toLocaleString("en-US")}</span>}
     </Link>
+  );
+}
+
+/** The node serves another chain than the network chosen: what it shows is not of that network. */
+function WrongChainBanner() {
+  const { network } = useChain();
+  const { error } = useNodeStatus();
+  if (!(error instanceof WrongChain)) return null;
+  return (
+    <div className="border-b border-danger/30 bg-danger-soft px-4 py-3 text-sm text-danger sm:px-6">
+      The node is not on the {network.name.toLowerCase()}: balances and transactions shown here are of another chain.{" "}
+      <Link to="/settings" className="font-semibold underline">
+        Change the node
+      </Link>
+    </div>
   );
 }
 
@@ -180,6 +198,7 @@ export function Layout() {
           </div>
         </header>
         <main className="flex-1 pb-24 lg:pb-0">
+          <WrongChainBanner />
           <Outlet />
         </main>
       </div>

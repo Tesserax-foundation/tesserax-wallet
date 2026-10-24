@@ -10,16 +10,15 @@ import { Amount as AmountText, AddressLink, ExplorerLink, Identicon, TimeAgo } f
 import { useTransaction } from "../components/Transaction";
 import { Badge, Card, CardHeader, cx, EmptyState, ErrorState, Skeleton, SkeletonRows } from "../components/ui";
 import { copyText } from "../lib/clipboard";
-import { normalizeAddress, useBalance, useReceivedDelegations } from "../lib/chain";
+import { normalizeAddress, useBalance, useChain, useReceivedDelegations } from "../lib/chain";
 import { callLabel, formatTess, humanize } from "../lib/format";
-import { historyAvailable, useActivity } from "../lib/history";
+import { useActivity, useHistoryAvailable } from "../lib/history";
 import { useWallet } from "../lib/session";
-
-/** Faucet of the testnet, which gives test TESS; none on the mainnet. */
-const faucetUrl = (import.meta.env.VITE_FAUCET_URL as string | undefined)?.replace(/\/$/, "");
 
 function BalanceCard() {
   const { active } = useWallet();
+  // Faucet of the testnet, which gives test TESS; none on the mainnet.
+  const { faucetUrl } = useChain().network;
   const { data, error, isLoading } = useBalance(active?.address);
   const total = data ? data.free.planck + data.reserved.planck : 0n;
   return (
@@ -83,7 +82,7 @@ function BalanceCard() {
 function Activity() {
   const { active } = useWallet();
   const { data, error, isLoading } = useActivity(active?.address);
-  if (!historyAvailable) {
+  if (!useHistoryAvailable()) {
     return (
       <EmptyState title="History unavailable">
         This build has no explorer database for the history. <ExplorerLink path={`/account/${active?.address}`}>See the account in the explorer</ExplorerLink>

@@ -1,32 +1,39 @@
 import { TesseraxClient } from "@tesserax/sdk";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Globe, Info, KeyRound, Link2, Lock, Network, RotateCcw, Settings as SettingsIcon, ShieldCheck, TriangleAlert } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { Check, Globe, Info, KeyRound, Link2, Lock, Network as NetworkIcon, RotateCcw, Settings as SettingsIcon, ShieldCheck, TriangleAlert } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useNavigate } from "react-router";
 import { Button, ErrorText, PasswordInput, Select, StrengthMeter, TextInput, Toggle, passwordStrength } from "../components/forms";
-import { network, Page } from "../components/Layout";
+import { Page } from "../components/Layout";
 import { Sheet } from "../components/Sheet";
-import { Card, CardHeader, Field, Fields, PageHeader, Skeleton } from "../components/ui";
+import { Card, CardHeader, cx, Field, Fields, PageHeader, Skeleton } from "../components/ui";
 import { AddressLink } from "../components/links";
 import type { Connection } from "../extension/protocol";
-import { useNodeStatus } from "../lib/chain";
+import { checkedChainInfo, useNodeStatus } from "../lib/chain";
 import { formatDate } from "../lib/format";
 import { isExtension, toBackground } from "../lib/platform";
 import { KeystoreError } from "../lib/keystore";
 import { useWallet } from "../lib/session";
-import { defaultSettings } from "../lib/storage";
+import { isAvailable, networkIds, networks, type Network, type NetworkId } from "../lib/networks";
+import { activeNetwork } from "../lib/storage";
 
 const isNodeUrl = (url: string) => /^wss?:\/\/[^\s/]+(\/[^\s]*)?$/.test(url);
 
-/** Chain information of the node at `url`, or why it cannot be reached. */
-async function probe(url: string) {
+/** Chain information of the node at `url`, or why it cannot serve `network`. */
+async function probe(url: string, network: Network) {
   const client = new TesseraxClient(url);
   try {
-    return await Promise.race([client.chainInfo(), new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the node does not answer")), 8000))]);
+    return await checkedChainInfo(client, network);
   } finally {
     client.destroy();
   }
 }
+
+const descriptions: Record<NetworkId, string> = {
+  mainnet: "The Tesserax network, where TESS have value.",
+  testnet: "For trying: test TESS have no value and come free from the faucet.",
+  development: "A chain of your own, such as a local node started with --dev.",
+};
 
 function Section({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
   return (
@@ -41,88 +48,14 @@ export function Settings() {
   const wallet = useWallet();
   const navigate = useNavigate();
   const status = useNodeStatus();
-  const [nodeUrl, setNodeUrl] = useState(wallet.settings.nodeUrl);
-  const [explorerUrl, setExplorerUrl] = useState(wallet.settings.explorerUrl);
-  const [nodeState, setNodeState] = useState<{ busy?: boolean; error?: string; ok?: string }>({});
-  const [explorerError, setExplorerError] = useState<string | null>(null);
   const [changing, setChanging] = useState(false);
   const [resetting, setResetting] = useState(false);
-  const defaults = defaultSettings();
-
-  const saveNode = async (url: string) => {
-    if (!isNodeUrl(url)) return setNodeState({ error: "A WebSocket URL such as wss://node.example.com" });
-    if (location.protocol === "https:" && url.startsWith("ws://") && !/^ws:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
-      return setNodeState({ error: "This page is served over HTTPS: use a wss:// node" });
-    }
-    setNodeState({ busy: true });
-    try {
-      const info = await probe(url);
-      await wallet.updateSettings({ nodeUrl: url });
-      setNodeUrl(url);
-      setNodeState({ ok: `Connected to ${info.chain}, block #${info.bestBlock.toLocaleString("en-US")}` });
-    } catch (e) {
-      setNodeState({ error: `Cannot connect: ${(e as Error).message}` });
-    }
-  };
 
   return (
     <Page narrow className="space-y-6">
       <PageHeader title="Settings" icon={<SettingsIcon size={20} />} />
 
-      <Section title="Network" icon={<Network size={16} />}>
-        <div>
-          <TextInput
-            label="Node"
-            hint={network}
-            value={nodeUrl}
-            onChange={(e) => {
-              setNodeUrl(e.target.value.trim());
-              setNodeState({});
-            }}
-            spellCheck={false}
-            mono
-            error={nodeState.error}
-          />
-          {nodeState.ok && <p className="mt-1.5 text-sm text-success">{nodeState.ok}</p>}
-          <p className="mt-1.5 text-xs text-muted">The node only sees signed transactions. A node you do not trust can hide or delay them, but never sign for you.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" busy={nodeState.busy} disabled={nodeUrl === wallet.settings.nodeUrl && !nodeState.error} onClick={() => saveNode(nodeUrl)}>
-              Connect
-            </Button>
-            {wallet.settings.nodeUrl !== defaults.nodeUrl && (
-              <Button variant="ghost" size="sm" onClick={() => saveNode(defaults.nodeUrl)}>
-                <RotateCcw size={14} /> Default node
-              </Button>
-            )}
-          </div>
-        </div>
-        <div>
-          <TextInput
-            label="Explorer"
-            hint="for links"
-            value={explorerUrl}
-            onChange={(e) => {
-              setExplorerUrl(e.target.value.trim());
-              setExplorerError(null);
-            }}
-            placeholder="https://explorer.example.com"
-            spellCheck={false}
-            mono
-            error={explorerError}
-          />
-          <Button
-            variant="secondary"
-            size="sm" className="mt-3"
-            disabled={explorerUrl === wallet.settings.explorerUrl}
-            onClick={async () => {
-              if (explorerUrl && !/^https?:\/\/[^\s]+$/.test(explorerUrl)) return setExplorerError("A URL such as https://explorer.example.com");
-              await wallet.updateSettings({ explorerUrl });
-            }}
-          >
-            Save
-          </Button>
-        </div>
-      </Section>
+      <NetworkSection />
 
       <Section title="Security" icon={<ShieldCheck size={16} />}>
         <Select
@@ -152,6 +85,7 @@ export function Settings() {
       <Section title="About" icon={<Info size={16} />}>
         <div className="-mx-4 -my-5 sm:-mx-5">
           <Fields>
+            <Field label="Network">{activeNetwork(wallet.settings).name}</Field>
             <Field label="Chain">{status.data ? status.data.chain : status.isLoading ? <Skeleton className="h-4 w-32" /> : "Unreachable"}</Field>
             <Field label="Best block">{status.data ? `#${status.data.bestBlock.toLocaleString("en-US")}` : "—"}</Field>
             <Field label="Runtime version">{status.data?.specVersion ?? "—"}</Field>
@@ -186,6 +120,141 @@ export function Settings() {
         Tesserax Wallet · keys are encrypted and used in this browser only
       </p>
     </Page>
+  );
+}
+
+/** The network, and the node and explorer used for it. */
+function NetworkSection() {
+  const wallet = useWallet();
+  const network = activeNetwork(wallet.settings);
+  const builtIn = networks[network.id];
+  const [nodeUrl, setNodeUrl] = useState(network.nodeUrl);
+  const [explorerUrl, setExplorerUrl] = useState(network.explorerUrl);
+  const [nodeState, setNodeState] = useState<{ busy?: boolean; error?: string; ok?: string }>({});
+  const [explorerError, setExplorerError] = useState<string | null>(null);
+
+  // The fields show the node and explorer of the network chosen.
+  useEffect(() => setNodeUrl(network.nodeUrl), [network.nodeUrl]);
+  useEffect(() => setExplorerUrl(network.explorerUrl), [network.explorerUrl]);
+  useEffect(() => {
+    setNodeState({});
+    setExplorerError(null);
+  }, [network.id]);
+
+  const choose = (id: NetworkId) => {
+    if (id !== network.id) void wallet.updateSettings({ network: id });
+  };
+
+  const saveNode = async (url: string) => {
+    if (!isNodeUrl(url)) return setNodeState({ error: "A WebSocket URL such as wss://node.example.com" });
+    if (location.protocol === "https:" && url.startsWith("ws://") && !/^ws:\/\/(127\.0\.0\.1|localhost)[:/]/.test(url)) {
+      return setNodeState({ error: "This page is served over HTTPS: use a wss:// node" });
+    }
+    setNodeState({ busy: true });
+    try {
+      const info = await probe(url, network);
+      const nodes = { ...wallet.settings.nodes };
+      if (url === builtIn.nodeUrl) delete nodes[network.id];
+      else nodes[network.id] = url;
+      await wallet.updateSettings({ nodes });
+      setNodeState({ ok: `Connected to ${info.chain}, block #${info.bestBlock.toLocaleString("en-US")}` });
+    } catch (e) {
+      setNodeState({ error: `Cannot connect: ${(e as Error).message}` });
+    }
+  };
+
+  const saveExplorer = async (url: string) => {
+    if (url && !/^https?:\/\/[^\s]+$/.test(url)) return setExplorerError("A URL such as https://explorer.example.com");
+    const explorers = { ...wallet.settings.explorers };
+    if (url === builtIn.explorerUrl) delete explorers[network.id];
+    else explorers[network.id] = url;
+    await wallet.updateSettings({ explorers });
+  };
+
+  return (
+    <Section title="Network" icon={<NetworkIcon size={16} />}>
+      <div role="radiogroup" aria-label="Network" className="grid gap-2 sm:grid-cols-3">
+        {networkIds.map((id) => {
+          const option = networks[id];
+          const available = isAvailable(option);
+          const selected = id === network.id;
+          return (
+            <button
+              key={id}
+              role="radio"
+              aria-checked={selected}
+              disabled={!available}
+              onClick={() => choose(id)}
+              className={cx(
+                "relative rounded-xl border p-3 text-left transition-colors",
+                selected ? "border-accent bg-accent-soft" : "border-line bg-surface hover:border-line-strong",
+                !available && "cursor-not-allowed opacity-50 hover:border-line",
+              )}
+            >
+              <span className="flex items-center justify-between gap-2 text-sm font-semibold">
+                {option.name}
+                {selected && <Check size={15} className="text-accent" />}
+              </span>
+              <span className="mt-1 block text-xs text-muted">{available ? descriptions[id] : "Not launched yet."}</span>
+            </button>
+          );
+        })}
+      </div>
+      <div>
+        <TextInput
+          label="Node"
+          hint={network.name}
+          value={nodeUrl}
+          onChange={(e) => {
+            setNodeUrl(e.target.value.trim());
+            setNodeState({});
+          }}
+          spellCheck={false}
+          mono
+          error={nodeState.error}
+        />
+        {nodeState.ok && <p className="mt-1.5 text-sm text-success">{nodeState.ok}</p>}
+        <p className="mt-1.5 text-xs text-muted">
+          {network.genesisHash ? `The wallet only accepts a node of the ${network.name.toLowerCase()}. ` : ""}
+          The node only sees signed transactions. A node you do not trust can hide or delay them, but never sign for you.
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button size="sm" busy={nodeState.busy} disabled={nodeUrl === network.nodeUrl && !nodeState.error} onClick={() => saveNode(nodeUrl)}>
+            Connect
+          </Button>
+          {network.nodeUrl !== builtIn.nodeUrl && (
+            <Button variant="ghost" size="sm" onClick={() => saveNode(builtIn.nodeUrl)}>
+              <RotateCcw size={14} /> Default node
+            </Button>
+          )}
+        </div>
+      </div>
+      <div>
+        <TextInput
+          label="Explorer"
+          hint="for links"
+          value={explorerUrl}
+          onChange={(e) => {
+            setExplorerUrl(e.target.value.trim());
+            setExplorerError(null);
+          }}
+          placeholder="https://explorer.example.com"
+          spellCheck={false}
+          mono
+          error={explorerError}
+        />
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" disabled={explorerUrl === network.explorerUrl} onClick={() => saveExplorer(explorerUrl)}>
+            Save
+          </Button>
+          {network.explorerUrl !== builtIn.explorerUrl && (
+            <Button variant="ghost" size="sm" onClick={() => saveExplorer(builtIn.explorerUrl)}>
+              <RotateCcw size={14} /> Default explorer
+            </Button>
+          )}
+        </div>
+      </div>
+    </Section>
   );
 }
 

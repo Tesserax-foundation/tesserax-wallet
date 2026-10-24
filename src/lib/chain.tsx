@@ -4,7 +4,9 @@
 import { accountIdOf, Amount, Channels, formatAddress, MORTALITY, mlDsaTxCreator, parseAddress, Tasks, TesseraxClient, type Delegation, type Keypair } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
+import { markClient, wrongChain, type Network } from "./networks";
 import { useWallet } from "./session";
+import { activeNetwork } from "./storage";
 
 export type Operation = (client: TesseraxClient) => Promise<unknown>;
 
@@ -13,6 +15,8 @@ interface Chain {
   tasks: Tasks;
   channels: Channels;
   url: string;
+  /** The network chosen, with its node and explorer. */
+  network: Network;
 }
 
 const ChainContext = createContext<Chain | null>(null);
@@ -25,28 +29,42 @@ export function useChain(): Chain {
 
 export function ChainProvider({ children }: { children: ReactNode }) {
   const { settings } = useWallet();
+  const network = activeNetwork(settings);
   const [chain, setChain] = useState<Chain | null>(null);
   // The connection is opened and closed by the same effect: an effect run twice, as in strict
   // mode, never leaves the application with a closed connection.
   useEffect(() => {
-    const client = new TesseraxClient(settings.nodeUrl);
-    setChain({ client, tasks: new Tasks(client), channels: new Channels(client), url: settings.nodeUrl });
+    const client = new TesseraxClient(network.nodeUrl);
+    markClient(client, network);
+    setChain({ client, tasks: new Tasks(client), channels: new Channels(client), url: network.nodeUrl, network });
     return () => client.destroy();
-  }, [settings.nodeUrl]);
-  if (!chain || chain.url !== settings.nodeUrl) return null;
-  return <ChainContext.Provider value={chain}>{children}</ChainContext.Provider>;
+  }, [network.id, network.nodeUrl]);
+  if (!chain || chain.url !== network.nodeUrl || chain.network.id !== network.id) return null;
+  const value = chain.network.explorerUrl === network.explorerUrl ? chain : { ...chain, network };
+  return <ChainContext.Provider value={value}>{children}</ChainContext.Provider>;
 }
 
-/** The node answers, and on which block it is. */
+const toHex = (bytes: Uint8Array) => "0x" + Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+
+/** Chain information of `client`, if it serves `network`: a node of another chain is refused. */
+export async function checkedChainInfo(client: TesseraxClient, network: Network) {
+  const answer = Promise.all([client.chainInfo(), client.genesisHash()]);
+  const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the node does not answer")), 8000));
+  const [info, genesis] = await Promise.race([answer, timeout]);
+  const wrong = wrongChain(network, toHex(genesis));
+  if (wrong) throw new WrongChain(wrong);
+  return info;
+}
+
+/** The node serves another chain than the network chosen. */
+export class WrongChain extends Error {}
+
+/** The node answers, on the chain of the network, and on which block it is. */
 export const useNodeStatus = () => {
-  const { client, url } = useChain();
+  const { client, url, network } = useChain();
   return useQuery({
-    queryKey: ["node", url],
-    queryFn: () =>
-      Promise.race([
-        client.chainInfo(),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("the node does not answer")), 8000)),
-      ]),
+    queryKey: ["node", network.id, url],
+    queryFn: () => checkedChainInfo(client, network),
     refetchInterval: 12_000,
     retry: false,
   });

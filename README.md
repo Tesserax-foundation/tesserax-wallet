@@ -6,6 +6,8 @@ extension and as a desktop application: post-quantum accounts for people and AI 
 - **Accounts**: create an account and its 24-word recovery phrase, import one from a phrase or
   from a keystore file of the command line wallet, back it up, rename, export, remove. Several
   accounts under one wallet password.
+- **Networks**: the mainnet, the testnet or a chain of one's own, chosen in the settings, each
+  with its node and explorer.
 - **Send and receive** TESS, with the exact network fee before signing, a QR code of the
   address, and the history of the account.
 - **AI agents**: give an agent key a budget per period, a limit per call, an expiry, allowed
@@ -130,14 +132,26 @@ release.
 
 ## Configuration
 
-Copy `.env.example` to `.env`:
+Copy `.env.example` to `.env`.
+
+The wallet knows three networks: the **mainnet**, offered once its genesis is known, the
+**testnet** and **development**, a chain of one's own. Users choose one in the settings, and
+for each a node and an explorer. A node whose genesis hash is not that of the network is
+refused, and the private balance of an account is stored per chain. The public endpoints of the
+mainnet and the testnet are built in, in `src/lib/networks.ts`.
 
 | Variable | Meaning |
 |---|---|
-| `VITE_NODE_URL` | Node used by default, `wss://` in production. Users can change it in the settings. |
-| `VITE_NETWORK` | Network name shown in the header: Mainnet, Testnet or Development. |
+| `VITE_NETWORK` | Network the wallet opens on: Mainnet, Testnet or Development. |
+| `VITE_NODE_URL` | Node of that network, `wss://` in production. |
 | `VITE_EXPLORER_URL` | Explorer, for links to blocks, transactions and accounts. |
-| `VITE_EXPLORER_SUPABASE_URL`, `VITE_EXPLORER_SUPABASE_KEY` | Optional: the Supabase project of the explorer and its anon key, read-only, for the transaction history. Without them, the history links to the explorer. |
+| `VITE_FAUCET_URL` | Optional: faucet of a testnet, for the Get test TESS button. |
+| `VITE_EXPLORER_SUPABASE_URL`, `VITE_EXPLORER_SUPABASE_KEY` | Optional: the Supabase project of the explorer and its anon key, read-only, for the transaction history and a fast synchronization of the private balance. Without them, the history links to the explorer. |
+| `VITE_GENESIS` | Genesis hash the node must have. |
+
+These variables apply to the network the wallet opens on. Those of another network take its
+name as prefix: `VITE_TESTNET_EXPLORER_SUPABASE_URL`, `VITE_MAINNET_NODE_URL`,
+`VITE_MAINNET_GENESIS`, and so on.
 
 ## Development
 

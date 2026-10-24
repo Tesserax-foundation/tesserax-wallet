@@ -2,6 +2,7 @@
  * it is secret without the password. */
 
 import type { KeystoreFile } from "./keystore";
+import { defaultNetworkId, networkOf, networks, type Network, type NetworkId } from "./networks";
 
 export interface StoredAccount {
   name: string;
@@ -13,8 +14,10 @@ export interface StoredAccount {
 }
 
 export interface Settings {
-  nodeUrl: string;
-  explorerUrl: string;
+  network: NetworkId;
+  /** Node and explorer chosen for a network, instead of its own. */
+  nodes: Partial<Record<NetworkId, string>>;
+  explorers: Partial<Record<NetworkId, string>>;
   /** Minutes without activity before the wallet locks. */
   autoLockMinutes: number;
   /** Ask for the password before every transaction. */
@@ -23,11 +26,18 @@ export interface Settings {
 }
 
 export const defaultSettings = (): Settings => ({
-  nodeUrl: (import.meta.env.VITE_NODE_URL as string | undefined) ?? "ws://127.0.0.1:9944",
-  explorerUrl: (import.meta.env.VITE_EXPLORER_URL as string | undefined) ?? "",
+  network: defaultNetworkId,
+  nodes: {},
+  explorers: {},
   autoLockMinutes: 15,
   confirmWithPassword: false,
 });
+
+/** The network of `settings`, with the node and the explorer chosen for it. */
+export function activeNetwork(settings: Settings): Network {
+  const network = networkOf(settings.network);
+  return { ...network, nodeUrl: settings.nodes[network.id] ?? network.nodeUrl, explorerUrl: settings.explorers[network.id] ?? network.explorerUrl };
+}
 
 const DATABASE = "tesserax-wallet";
 const ACCOUNTS = "accounts";
@@ -94,13 +104,32 @@ export async function replaceAccounts(accounts: StoredAccount[]): Promise<void> 
   });
 }
 
-export const getShielded = (address: string) => run<StoredShielded | undefined>(SHIELDED, "readonly", (s) => s.get(address));
+/** Shielded accounts are stored by chain, `genesisHash`, and address: the same key has other notes
+ * on another chain. */
+export const getShielded = (genesisHash: string, address: string) =>
+  run<StoredShielded | undefined>(SHIELDED, "readonly", (s) => s.get(`${genesisHash}/${address}`));
 
-export const putShielded = (address: string, state: StoredShielded) => run(SHIELDED, "readwrite", (s) => s.put(state, address));
+export const putShielded = (genesisHash: string, address: string, state: StoredShielded) =>
+  run(SHIELDED, "readwrite", (s) => s.put(state, `${genesisHash}/${address}`));
+
+/** Settings saved before the choice of the network: one node and one explorer. */
+interface SavedBefore {
+  nodeUrl?: string;
+  explorerUrl?: string;
+}
 
 export async function loadSettings(): Promise<Settings> {
-  const saved = await run<Partial<Settings> | undefined>(SETTINGS, "readonly", (s) => s.get("settings"));
-  return { ...defaultSettings(), ...saved };
+  const saved = await run<(Partial<Settings> & SavedBefore) | undefined>(SETTINGS, "readonly", (s) => s.get("settings"));
+  const { nodeUrl, explorerUrl, ...rest } = saved ?? {};
+  const settings: Settings = { ...defaultSettings(), ...rest };
+  settings.network = networkOf(settings.network).id;
+  if (!rest.network) {
+    // They were those of the network of the build.
+    const network = networks[defaultNetworkId];
+    if (nodeUrl && nodeUrl !== network.nodeUrl) settings.nodes = { [network.id]: nodeUrl };
+    if (explorerUrl !== undefined && explorerUrl !== network.explorerUrl) settings.explorers = { [network.id]: explorerUrl };
+  }
+  return settings;
 }
 
 export const saveSettings = (settings: Settings) => run(SETTINGS, "readwrite", (s) => s.put(settings, "settings"));

@@ -2,6 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { copyText } from "../lib/clipboard";
 import { useWallet } from "../lib/session";
+import { activeNetwork } from "../lib/storage";
 import { exactTess, formatDate, formatTess, shortAddress, shortHash, timeAgo } from "../lib/format";
 import { useNow } from "../lib/hooks";
 import { cx } from "./ui";
@@ -70,10 +71,10 @@ export function CopyButton({ value, className }: { value: string; className?: st
 
 /** A link to `path` in the explorer, if one is configured. */
 export function ExplorerLink({ path, children, className }: { path: string; children: ReactNode; className?: string }) {
-  const { settings } = useWallet();
-  if (!settings.explorerUrl) return <span className={className}>{children}</span>;
+  const { explorerUrl } = activeNetwork(useWallet().settings);
+  if (!explorerUrl) return <span className={className}>{children}</span>;
   return (
-    <a href={`${settings.explorerUrl.replace(/\/$/, "")}${path}`} target="_blank" rel="noreferrer noopener" className={cx("text-accent hover:text-accent-strong", className)}>
+    <a href={`${explorerUrl.replace(/\/$/, "")}${path}`} target="_blank" rel="noreferrer noopener" className={cx("text-accent hover:text-accent-strong", className)}>
       {children}
     </a>
   );

@@ -19,6 +19,7 @@ import { parseAddress, TransactionFailed, type Keypair, type TesseraxClient, typ
 import { filter, firstValueFrom } from "rxjs";
 import init, { callData, isShieldedAddress, ShieldedWallet, transactExtrinsic } from "../../vendor/tesserax-shielded/tesserax_shielded_wasm.js";
 import wasmUrl from "../../vendor/tesserax-shielded/tesserax_shielded_wasm_bg.wasm?url";
+import { clientNetwork, type Network } from "./networks";
 import { getShielded, putShielded } from "./storage";
 
 export { isShieldedAddress };
@@ -79,10 +80,10 @@ interface Loaded {
   block: number;
 }
 
-async function load(keypair: Keypair): Promise<Loaded> {
+async function load(chain: string, keypair: Keypair): Promise<Loaded> {
   await loadShielded();
   const seed = keypair.seed();
-  const stored = await getShielded(keypair.address);
+  const stored = await getShielded(chain, keypair.address);
   if (stored) {
     try {
       const state = chacha20poly1305(stateKey(seed), stored.nonce).decrypt(stored.ciphertext);
@@ -94,16 +95,15 @@ async function load(keypair: Keypair): Promise<Loaded> {
   return { wallet: new ShieldedWallet(seed), block: -1 };
 }
 
-async function save(keypair: Keypair, { wallet, block }: Loaded): Promise<void> {
+async function save(chain: string, keypair: Keypair, { wallet, block }: Loaded): Promise<void> {
   const nonce = randomBytes(12);
   const ciphertext = chacha20poly1305(stateKey(keypair.seed()), nonce).encrypt(wallet.state());
-  await putShielded(keypair.address, { nonce, ciphertext, block });
+  await putShielded(chain, keypair.address, { nonce, ciphertext, block });
 }
 
 // Explorer database.
 
-const indexerUrl = (import.meta.env.VITE_EXPLORER_SUPABASE_URL as string | undefined)?.replace(/\/$/, "");
-const indexerKey = import.meta.env.VITE_EXPLORER_SUPABASE_KEY as string | undefined;
+type Indexer = NonNullable<Network["indexer"]>;
 
 interface IndexedRow {
   position: string | number;
@@ -114,13 +114,13 @@ interface IndexedRow {
 }
 
 /** The transactions of the pool from `position` on, from the explorer database. */
-async function indexed(position: bigint): Promise<{ events: Transacted[]; lastBlock: number }> {
+async function indexed({ url, key }: Indexer, position: bigint): Promise<{ events: Transacted[]; lastBlock: number }> {
   const events: Transacted[] = [];
   let lastBlock = -1;
   for (let from = position; ; ) {
     const response = await fetch(
-      `${indexerUrl}/rest/v1/shielded_transactions?select=position,block_number,nullifiers,commitments,notes&position=gte.${from}&order=position.asc&limit=500`,
-      { headers: { apikey: indexerKey!, Authorization: `Bearer ${indexerKey}` }, referrerPolicy: "no-referrer", credentials: "omit" },
+      `${url}/rest/v1/shielded_transactions?select=position,block_number,nullifiers,commitments,notes&position=gte.${from}&order=position.asc&limit=500`,
+      { headers: { apikey: key, Authorization: `Bearer ${key}` }, referrerPolicy: "no-referrer", credentials: "omit" },
     );
     if (!response.ok) throw new Error(`explorer database unavailable (${response.status})`);
     const rows = (await response.json()) as IndexedRow[];
@@ -153,10 +153,14 @@ interface Runtime {
   decodeRoots: (hex: string) => unknown[];
 }
 
-let runtime: Promise<Runtime> | undefined;
+// By chain: the wallet can switch from a chain to another.
+const runtimes = new Map<string, Promise<Runtime>>();
 
-function runtimeOf(client: TesseraxClient): Promise<Runtime> {
-  runtime ??= (async () => {
+async function runtimeOf(client: TesseraxClient): Promise<Runtime> {
+  const chain = await chainOf(client);
+  let runtime = runtimes.get(chain);
+  if (runtime) return runtime;
+  runtime = (async () => {
     const metadata = unifyMetadata(decAnyMetadata(await request<string>(client, "state_getMetadata", [])));
     const lookup = getLookupFn(metadata);
     const pallet = metadata.pallets.find((p) => p.name === "Shielded");
@@ -176,23 +180,32 @@ function runtimeOf(client: TesseraxClient): Promise<Runtime> {
       decodeRoots: (hex: string) => roots.value.dec(hex),
     };
   })().catch((error) => {
-    runtime = undefined;
+    runtimes.delete(chain);
     throw error;
   });
+  runtimes.set(chain, runtime);
   return runtime;
 }
 
-const connected = new WeakMap<TesseraxClient, Promise<unknown>>();
+const connected = new WeakMap<TesseraxClient, Promise<{ genesisHash: string }>>();
 
-/** A request of the legacy RPC, once the client is connected: it answers for any block an archive
- * node keeps, unlike the queries of polkadot-api, limited to the blocks it follows. */
-async function request<T>(client: TesseraxClient, method: string, params: unknown[]): Promise<T> {
+/** The connection of `client`, once established, and the genesis hash of its chain. */
+function connection(client: TesseraxClient): Promise<{ genesisHash: string }> {
   let ready = connected.get(client);
   if (!ready) {
     ready = client.client.getChainSpecData();
     connected.set(client, ready);
   }
-  await ready;
+  return ready;
+}
+
+/** The chain of `client`: its genesis hash. */
+const chainOf = async (client: TesseraxClient) => (await connection(client)).genesisHash.toLowerCase();
+
+/** A request of the legacy RPC, once the client is connected: it answers for any block an archive
+ * node keeps, unlike the queries of polkadot-api, limited to the blocks it follows. */
+async function request<T>(client: TesseraxClient, method: string, params: unknown[]): Promise<T> {
+  await connection(client);
   return client.client._request<T>(method, params);
 }
 
@@ -260,15 +273,19 @@ const view = ({ wallet, block }: Loaded): ShieldedView => ({ address: wallet.add
 // One synchronization at a time per account.
 const running = new Map<string, Promise<Loaded>>();
 
-async function synchronize(client: TesseraxClient, keypair: Keypair, onProgress?: (block: number) => void): Promise<Loaded> {
-  const loaded = await load(keypair);
+async function synchronize(client: TesseraxClient, chain: string, keypair: Keypair, onProgress?: (block: number) => void): Promise<Loaded> {
+  const loaded = await load(chain, keypair);
   const best = await bestBlock(client);
   const target = await latestRoot(client, best.hash);
   const synced = () => (target === undefined ? loaded.wallet.position() === 0n : toHex(loaded.wallet.root()) === target);
 
-  if (!synced() && indexerUrl && indexerKey) {
+  // The explorer database of the network, if the node is on its chain. What it gives is checked
+  // against the root of the chain anyway.
+  const network = clientNetwork(client);
+  const indexer = network && (!network.genesisHash || network.genesisHash === chain) ? network.indexer : undefined;
+  if (!synced() && indexer) {
     try {
-      const { events, lastBlock } = await indexed(loaded.wallet.position());
+      const { events, lastBlock } = await indexed(indexer, loaded.wallet.position());
       for (const event of events) ingest(loaded.wallet, event);
       loaded.block = Math.max(loaded.block, lastBlock);
     } catch {
@@ -287,22 +304,24 @@ async function synchronize(client: TesseraxClient, keypair: Keypair, onProgress?
     }
   }
   loaded.block = best.number;
-  await save(keypair, loaded);
+  await save(chain, keypair, loaded);
   return loaded;
 }
 
-function synchronized(client: TesseraxClient, keypair: Keypair, onProgress?: (block: number) => void): Promise<Loaded> {
-  let task = running.get(keypair.address);
+async function synchronized(client: TesseraxClient, keypair: Keypair, onProgress?: (block: number) => void): Promise<{ chain: string; loaded: Loaded }> {
+  const chain = await chainOf(client);
+  const id = `${chain}/${keypair.address}`;
+  let task = running.get(id);
   if (!task) {
-    task = synchronize(client, keypair, onProgress).finally(() => running.delete(keypair.address));
-    running.set(keypair.address, task);
+    task = synchronize(client, chain, keypair, onProgress).finally(() => running.delete(id));
+    running.set(id, task);
   }
-  return task;
+  return { chain, loaded: await task };
 }
 
 /** Synchronize the shielded account of `keypair` with the chain. */
 export async function syncShielded(client: TesseraxClient, keypair: Keypair, onProgress?: (block: number) => void): Promise<ShieldedView> {
-  return view(await synchronized(client, keypair, onProgress));
+  return view((await synchronized(client, keypair, onProgress)).loaded);
 }
 
 /** The shielded address of `keypair`. */
@@ -333,7 +352,7 @@ async function submitUnsigned(client: TesseraxClient, extrinsic: Uint8Array): Pr
 
 /** Move `value` planck of the account of `keypair` into its shielded balance. */
 export async function shield(client: TesseraxClient, keypair: Keypair, value: bigint): Promise<TxOutcome> {
-  const loaded = await synchronized(client, keypair);
+  const { loaded } = await synchronized(client, keypair);
   const { pallet, shield } = await runtimeOf(client);
   const transaction = loaded.wallet.shield(keypair.accountId, value);
   const tx = await client.api.txFromCallData(callData(pallet, shield, transaction));
@@ -341,12 +360,12 @@ export async function shield(client: TesseraxClient, keypair: Keypair, value: bi
 }
 
 async function submitPrivate(client: TesseraxClient, keypair: Keypair, build: (wallet: ShieldedWallet, fee: bigint) => Uint8Array): Promise<TxOutcome> {
-  const loaded = await synchronized(client, keypair);
+  const { chain, loaded } = await synchronized(client, keypair);
   const [{ pallet, transact }, fee] = await Promise.all([runtimeOf(client), minimumFee(client)]);
   const transaction = build(loaded.wallet, fee);
   const outcome = await submitUnsigned(client, transactExtrinsic(pallet, transact, transaction));
   loaded.wallet.markPending(transaction);
-  await save(keypair, loaded);
+  await save(chain, keypair, loaded);
   return outcome;
 }
 
