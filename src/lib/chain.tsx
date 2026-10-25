@@ -1,7 +1,7 @@
 /** Connection to a Tesserax node, and what the wallet needs beyond the SDK: fee estimates,
  * delegations by owner or agent, channels by payee. */
 
-import { accountIdOf, Amount, Channels, formatAddress, MORTALITY, mlDsaTxCreator, parseAddress, Tasks, TesseraxClient, type Delegation, type Keypair } from "@tesserax/sdk";
+import { accountIdOf, Amount, Channels, Contracts, formatAddress, MORTALITY, mlDsaTxCreator, parseAddress, Tasks, TesseraxClient, type Delegation, type Keypair } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { markClient, wrongChain, type Network } from "./networks";
@@ -105,6 +105,8 @@ async function capture(client: TesseraxClient, operation: (client: TesseraxClien
   (capturing as any).submit = async (tx: Tx) => {
     throw new Captured(tx);
   };
+  // Contracts submit through the client they were made with: this one, to be captured too.
+  Object.defineProperty(capturing, "contracts", { value: new Contracts(capturing) });
   try {
     await operation(capturing);
   } catch (error) {

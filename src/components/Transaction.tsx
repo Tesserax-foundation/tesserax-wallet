@@ -4,7 +4,7 @@
  * a block includes it.
  */
 
-import type { Amount, Keypair, TesseraxClient, TxOutcome } from "@tesserax/sdk";
+import { Contracts, type Amount, type Keypair, type TesseraxClient, type TxOutcome } from "@tesserax/sdk";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleCheck, CircleX, Loader2, ShieldCheck, X } from "lucide-react";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
@@ -142,6 +142,8 @@ export function TransactionPanel({ request, onClose: close, inline }: { request:
       let outcome: TxOutcome | undefined;
       const recording: TesseraxClient = Object.create(chain.client);
       recording.submit = async (tx, signer) => (outcome = await chain.client.submit(tx, signer));
+      // Contracts submit through the client they were made with: this one, to be recorded too.
+      Object.defineProperty(recording, "contracts", { value: new Contracts(recording) });
       const result = await request.operation(recording, key);
       // Transactions submitted without signer return their inclusion.
       if (!outcome && result && typeof result === "object" && "blockNumber" in result) outcome = result as TxOutcome;

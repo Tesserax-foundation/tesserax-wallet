@@ -14,6 +14,11 @@ extension and as a desktop application: post-quantum accounts for people and AI 
   calls and recipients; change or revoke it. Spend the budgets you received. Register your own
   agent in the registry, manage its profile, pause it, confirm the agents you own, discover
   agents by capability, pay and rate them.
+- **Private balance**: move TESS in and out of the shielded pool, and send privately to shielded
+  addresses, with proofs generated in the browser.
+- **Contracts**: deploy Solidity contracts compiled for PolkaVM, add deployed ones from their
+  address and ABI, read them, call them through the review of every transaction, and follow
+  their events.
 - **Payment channels**: open, top up, close and finalize channels; sign vouchers by hand; claim
   vouchers and close channels as the payee.
 - **Task market**: create tasks with the reward in escrow, an arbiter and a worker bond; accept,

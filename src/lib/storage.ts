@@ -44,6 +44,20 @@ const ACCOUNTS = "accounts";
 const SETTINGS = "settings";
 /** Shielded accounts: their notes and the note tree, encrypted with a key of the account. */
 const SHIELDED = "shielded";
+/** Contracts the user follows, by network. */
+const CONTRACTS = "contracts";
+
+export interface StoredContract {
+  /** `<network>/<address>`. */
+  id: string;
+  network: NetworkId;
+  /** `0x` and 40 digits, checksummed. */
+  address: string;
+  name: string;
+  /** Its ABI, as `solc` or `resolc` write it. */
+  abi: unknown[];
+  addedAt: number;
+}
 
 export interface StoredShielded {
   nonce: Uint8Array;
@@ -56,13 +70,14 @@ let database: Promise<IDBDatabase> | undefined;
 
 function open(): Promise<IDBDatabase> {
   database ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 2);
+    const request = indexedDB.open(DATABASE, 3);
     request.onupgradeneeded = (event) => {
       if (event.oldVersion < 1) {
         request.result.createObjectStore(ACCOUNTS, { keyPath: "name" });
         request.result.createObjectStore(SETTINGS);
       }
       if (event.oldVersion < 2) request.result.createObjectStore(SHIELDED);
+      if (event.oldVersion < 3) request.result.createObjectStore(CONTRACTS, { keyPath: "id" }).createIndex("network", "network");
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("cannot open the wallet storage"));
@@ -117,6 +132,17 @@ interface SavedBefore {
   nodeUrl?: string;
   explorerUrl?: string;
 }
+
+export const listContracts = async (network: NetworkId) =>
+  (await run<StoredContract[]>(CONTRACTS, "readonly", (s) => s.index("network").getAll(network))).sort((a, b) => a.addedAt - b.addedAt);
+
+export const getContract = (network: NetworkId, address: string) =>
+  run<StoredContract | undefined>(CONTRACTS, "readonly", (s) => s.get(`${network}/${address}`));
+
+export const putContract = (contract: Omit<StoredContract, "id">) =>
+  run(CONTRACTS, "readwrite", (s) => s.put({ ...contract, id: `${contract.network}/${contract.address}` }));
+
+export const deleteContract = (network: NetworkId, address: string) => run(CONTRACTS, "readwrite", (s) => s.delete(`${network}/${address}`));
 
 export async function loadSettings(): Promise<Settings> {
   const saved = await run<(Partial<Settings> & SavedBefore) | undefined>(SETTINGS, "readonly", (s) => s.get("settings"));
