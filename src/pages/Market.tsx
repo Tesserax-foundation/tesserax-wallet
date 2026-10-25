@@ -38,9 +38,29 @@ const hoursLeft = (unix: number | undefined) => {
   return hours >= 1 ? `in ${hours} h ${Math.floor((seconds % 3600) / 60)} min` : `in ${Math.max(1, Math.round(seconds / 60))} min`;
 };
 
+/** The chain has no market before the runtime upgrade that brings it. */
+export class NoMarket extends Error {}
+
 function useOffers() {
   const { client, url } = useChain();
-  return useQuery({ queryKey: ["offers", url], queryFn: () => client.swaps.offers(), refetchInterval: 18_000 });
+  return useQuery({
+    queryKey: ["offers", url],
+    queryFn: async () => {
+      try {
+        return await client.swaps.offers();
+      } catch (error) {
+        if (/Swaps/.test(String((error as Error).message))) throw new NoMarket();
+        throw error;
+      }
+    },
+    refetchInterval: 18_000,
+    retry: (count, error) => !(error instanceof NoMarket) && count < 1,
+  });
+}
+
+function OffersError({ error }: { error: unknown }) {
+  if (error instanceof NoMarket) return <EmptyState title="No market on this network yet">It opens with the runtime upgrade that brings atomic swaps.</EmptyState>;
+  return <ErrorState error={error} />;
 }
 
 function NoBrowserWallet() {
@@ -291,7 +311,7 @@ function BuyTab() {
           }
         />
         {offers.error ? (
-          <ErrorState error={offers.error} />
+          <OffersError error={offers.error} />
         ) : !offers.data ? (
           <SkeletonRows rows={3} />
         ) : shown.length === 0 ? (
@@ -503,7 +523,7 @@ function SellTab() {
           }
         />
         {offers.error ? (
-          <ErrorState error={offers.error} />
+          <OffersError error={offers.error} />
         ) : !offers.data ? (
           <SkeletonRows rows={2} />
         ) : mine.length === 0 ? (
