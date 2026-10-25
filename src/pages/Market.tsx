@@ -96,8 +96,12 @@ function OfferRow({ offer, own, onBuy }: { offer: Offer; own: boolean; onBuy: ()
       </div>
       {own ? (
         <Badge tone="accent">Your offer</Badge>
+      ) : offer.payment.chain === "Bitcoin" ? (
+        <span className="max-w-40 text-right text-xs text-muted">
+          Paid in BTC with the command line wallet: <span className="font-mono">swap buy</span>
+        </span>
       ) : (
-        <Button size="sm" onClick={onBuy} disabled={offer.payment.chain === "Bitcoin"}>
+        <Button size="sm" onClick={onBuy}>
           Buy
         </Button>
       )}
@@ -457,8 +461,8 @@ function MakerCard() {
       />
       <div className="space-y-4 p-4 sm:p-5">
         <p className="text-sm text-muted">
-          While it runs, the wallet fills your offers for the payments locked for them, and takes back the trades that expired. Keep this tab open; for a maker that never sleeps, run{" "}
-          <span className="font-mono text-xs">tesserax-wallet swap make</span>.
+          While it runs, the wallet fills your offers for the payments locked for them, and takes back the trades that expired. Keep this tab open; for a maker that never sleeps, or for
+          offers paid in BTC, run <span className="font-mono text-xs">tesserax-wallet swap make</span>.
         </p>
         {running ? (
           <Button variant="secondary" className="w-full" onClick={maker.stop}>
