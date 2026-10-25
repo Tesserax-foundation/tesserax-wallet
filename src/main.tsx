@@ -9,6 +9,7 @@ import { Layout } from "./components/Layout";
 import { TransactionProvider } from "./components/Transaction";
 import "./index.css";
 import { ChainProvider } from "./lib/chain";
+import { MarketProvider } from "./lib/swaps";
 import { isDesktop, isExtension, isPopup, openExternal, openInTab } from "./lib/platform";
 import { useWallet, WalletProvider } from "./lib/session";
 import { Accounts, AddAccount } from "./pages/Accounts";
@@ -17,6 +18,7 @@ import { Approve } from "./pages/Approve";
 import { Channels } from "./pages/Channels";
 import { ContractDetail, Contracts } from "./pages/Contracts";
 import { Governance } from "./pages/Governance";
+import { Market } from "./pages/Market";
 import { Home, Receive, Send } from "./pages/Home";
 import { Private } from "./pages/Private";
 import { CreateWallet, ImportWallet, Restore, Unlock, Welcome } from "./pages/Onboarding";
@@ -69,7 +71,9 @@ function Unlocked({ children }: { children: ReactNode }) {
   if (location.pathname === "/restore") return <Navigate to="/" replace />;
   return (
     <ChainProvider>
-      <TransactionProvider>{children}</TransactionProvider>
+      <TransactionProvider>
+        <MarketProvider>{children}</MarketProvider>
+      </TransactionProvider>
     </ChainProvider>
   );
 }
@@ -116,6 +120,7 @@ const router = (isExtension || isDesktop ? createHashRouter : createBrowserRoute
       { path: "/contracts", element: <Contracts /> },
       { path: "/contracts/:address", element: <ContractDetail /> },
       { path: "/governance", element: <Governance /> },
+      { path: "/market", element: <Market /> },
       { path: "/tasks", element: <Tasks /> },
       { path: "/tasks/:id", element: <TaskDetail /> },
       { path: "/accounts", element: <Accounts /> },

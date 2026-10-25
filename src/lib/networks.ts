@@ -21,6 +21,8 @@ export interface Network {
   indexer?: { url: string; key: string };
   /** TESS of this network have no value. */
   test: boolean;
+  /** One local EVM chain, such as anvil, standing for every EVM chain of swaps: for development. */
+  evmLocalUrl?: string;
 }
 
 const builtIn: Record<NetworkId, Omit<Network, "indexer">> = {
@@ -82,6 +84,7 @@ function configure(id: NetworkId): Network {
     explorerUrl: trimSlash(variable(id, "EXPLORER_URL") ?? base.explorerUrl),
     faucetUrl: faucetUrl ? trimSlash(faucetUrl) : undefined,
     indexer: indexerUrl && indexerKey ? { url: trimSlash(indexerUrl), key: indexerKey } : undefined,
+    evmLocalUrl: id === "development" ? variable(id, "EVM_LOCAL_URL") : undefined,
   };
 }
 

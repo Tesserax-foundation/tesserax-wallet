@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, FileCode2, Landmark, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
+import { ArrowDownLeft, ArrowLeftRight, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, FileCode2, Landmark, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useChain, useNodeStatus, WrongChain } from "../lib/chain";
@@ -14,6 +14,7 @@ const nav = [
   { to: "/send", label: "Send", icon: ArrowUpRight },
   { to: "/receive", label: "Receive", icon: ArrowDownLeft },
   { to: "/private", label: "Private", icon: EyeOff },
+  { to: "/market", label: "Market", icon: ArrowLeftRight },
   { to: "/agents", label: "AI agents", icon: Bot },
   { to: "/tasks", label: "Task market", icon: Users },
   { to: "/channels", label: "Payment channels", icon: Zap },
@@ -24,7 +25,7 @@ const nav = [
 ];
 
 /** Tabs of the mobile bar; the rest is in the menu. */
-const tabs = [nav[0], nav[1], nav[3], nav[4]];
+const tabs = [nav[0], nav[1], nav[3], nav[5]];
 
 export function Logo({ compact }: { compact?: boolean }) {
   return (
