@@ -1,4 +1,4 @@
-import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, FileCode2, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Bot, Check, ChevronDown, EyeOff, FileCode2, Landmark, Home, Lock, Maximize2, Menu, Moon, Plus, Settings, Sun, Users, Wallet, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router";
 import { useChain, useNodeStatus, WrongChain } from "../lib/chain";
@@ -18,6 +18,7 @@ const nav = [
   { to: "/tasks", label: "Task market", icon: Users },
   { to: "/channels", label: "Payment channels", icon: Zap },
   { to: "/contracts", label: "Contracts", icon: FileCode2 },
+  { to: "/governance", label: "Governance", icon: Landmark },
   { to: "/accounts", label: "Accounts", icon: Wallet },
   { to: "/settings", label: "Settings", icon: Settings },
 ];

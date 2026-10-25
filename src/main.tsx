@@ -16,6 +16,7 @@ import { Agents } from "./pages/Agents";
 import { Approve } from "./pages/Approve";
 import { Channels } from "./pages/Channels";
 import { ContractDetail, Contracts } from "./pages/Contracts";
+import { Governance } from "./pages/Governance";
 import { Home, Receive, Send } from "./pages/Home";
 import { Private } from "./pages/Private";
 import { CreateWallet, ImportWallet, Restore, Unlock, Welcome } from "./pages/Onboarding";
@@ -114,6 +115,7 @@ const router = (isExtension || isDesktop ? createHashRouter : createBrowserRoute
       { path: "/channels", element: <Channels /> },
       { path: "/contracts", element: <Contracts /> },
       { path: "/contracts/:address", element: <ContractDetail /> },
+      { path: "/governance", element: <Governance /> },
       { path: "/tasks", element: <Tasks /> },
       { path: "/tasks/:id", element: <TaskDetail /> },
       { path: "/accounts", element: <Accounts /> },
