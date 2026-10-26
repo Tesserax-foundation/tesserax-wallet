@@ -2,10 +2,31 @@
  * maker of an account, which fills its offers while the wallet is open. Both run whatever page is
  * shown. */
 
-import { Amount, EVM_CHAINS, hashOf, newSecret, paymentDue, paymentSymbol, paymentDecimals, tessFor, type EvmSwaps, type Keypair, type Offer, type SwapChain } from "@tesserax/sdk";
+import {
+  Amount,
+  BITCOIN_LOCK_SECONDS,
+  Esplora,
+  EVM_CHAINS,
+  extractSigned,
+  hashOf,
+  lockPsbt,
+  newSecret,
+  outpointBytes,
+  paymentDue,
+  paymentSymbol,
+  paymentDecimals,
+  refundKey,
+  refundTransaction,
+  tessFor,
+  type EvmSwaps,
+  type Keypair,
+  type Offer,
+  type SwapChain,
+} from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Address } from "viem";
+import { bitcoinNetworkOf, connectBitcoin, keyHex } from "./bitcoin";
 import { useChain } from "./chain";
 import { connectEvm, decimal, evmNetworkOf, evmReader, hex, unhex } from "./evm";
 import { decryptSecret, encryptSecret, LOCK_SEARCH_SECONDS, MIN_REMAINING_SECONDS, PAYMENT_LOCK_SECONDS, ROUND_SECONDS } from "./market";
@@ -103,19 +124,10 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         busy = false;
       }
     };
-    const advance = async (p: StoredPurchase): Promise<StoredPurchase | undefined> => {
-      const evm = evmNetworkOf(network, p.chain);
-      if (!evm) return undefined;
-      const reader = evmReader(evm);
-      if (p.status === "locking") {
-        const head = await reader.head();
-        const found = (await reader.locks(BigInt(p.fromBlock), head.number, p.recipient as Address)).find((l) => hex(l.hash) === p.hash && l.sender.toLowerCase() === p.sender.toLowerCase());
-        if (found) return { ...p, lock: found.id, timelock: found.timelock, deadline: Math.floor(Date.now() / 1000) + found.timelock - head.time, status: "locked", note: undefined };
-        if (Date.now() / 1000 - p.createdAt / 1000 > LOCK_SEARCH_SECONDS) return { ...p, status: "failed", note: "No payment was locked." };
-        return undefined;
-      }
-      if ((p.status !== "locked" && p.status !== "claiming") || !p.lock) return undefined;
-      const id = await client.swaps.tradeOfLock(p.chain, unhex(p.lock));
+    /** Claim the trade the maker filled for `p`: the purchase claimed, nothing to save, or null
+     * when no trade of it is waiting for its claim. */
+    const claimFilled = async (p: StoredPurchase): Promise<StoredPurchase | undefined | null> => {
+      const id = await client.swaps.tradeOfLock(p.chain, unhex(p.lock!));
       const trade = id === undefined ? undefined : await client.swaps.trade(id);
       if (id !== undefined && trade) {
         if (trade.taker !== p.taker) return p.note ? undefined : { ...p, trade: id, note: "The maker filled it for another account: do not claim, take the payment back once its lock expires." };
@@ -129,9 +141,42 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         return { ...p, trade: id, status: "claimed", note: undefined };
       }
       if (id !== undefined && p.status === "claiming") return { ...p, trade: id, status: "claimed" };
+      return null;
+    };
+    const advanceBitcoin = async (p: StoredPurchase): Promise<StoredPurchase | undefined> => {
+      if (p.status === "locking") {
+        // Not signed, or not broadcast.
+        if (Date.now() / 1000 - p.createdAt / 1000 > LOCK_SEARCH_SECONDS) return { ...p, status: "failed", note: "The payment was not broadcast." };
+        return undefined;
+      }
+      if ((p.status !== "locked" && p.status !== "claiming") || !p.lock || !p.bitcoin) return undefined;
+      const filled = await claimFilled(p);
+      if (filled !== null) return filled;
+      const esplora = new Esplora(bitcoinNetworkOf(network), network.esploraUrl);
+      const now = await esplora.medianTime();
+      // Spent before its timelock, the payment was collected with the secret a claim revealed.
+      if (await esplora.isSpent(p.bitcoin.txid, p.bitcoin.vout)) return now <= p.timelock ? { ...p, status: "claimed" } : { ...p, status: "refunded" };
+      if (now <= p.timelock) return undefined;
+      return { ...p, status: "refundable", note: undefined };
+    };
+    const advance = async (p: StoredPurchase): Promise<StoredPurchase | undefined> => {
+      if (p.chain === "Bitcoin") return advanceBitcoin(p);
+      const evm = evmNetworkOf(network, p.chain);
+      if (!evm) return undefined;
+      const reader = evmReader(evm);
+      if (p.status === "locking") {
+        const head = await reader.head();
+        const found = (await reader.locks(BigInt(p.fromBlock), head.number, p.recipient as Address)).find((l) => hex(l.hash) === p.hash && l.sender.toLowerCase() === p.sender.toLowerCase());
+        if (found) return { ...p, lock: found.id, timelock: found.timelock, deadline: Math.floor(Date.now() / 1000) + found.timelock - head.time, status: "locked", note: undefined };
+        if (Date.now() / 1000 - p.createdAt / 1000 > LOCK_SEARCH_SECONDS) return { ...p, status: "failed", note: "No payment was locked." };
+        return undefined;
+      }
+      if ((p.status !== "locked" && p.status !== "claiming") || !p.lock) return undefined;
+      const filled = await claimFilled(p);
+      if (filled !== null) return filled;
       // The maker collected with the secret: only a claim reveals it.
       const status = await reader.lockStatus(p.lock as `0x${string}`);
-      if (status?.state === "Claimed") return { ...p, trade: id, status: "claimed" };
+      if (status?.state === "Claimed") return { ...p, status: "claimed" };
       if (status?.state === "Refunded") return { ...p, status: "refunded" };
       // Not filled, or no longer claimable: the payment returns once its lock expires.
       if ((await reader.head()).time < p.timelock) return undefined;
@@ -142,10 +187,106 @@ export function MarketProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(timer);
   }, [genesis, client, network, save]);
 
+  const buyWithBitcoin = async (offer: Offer, amount: Amount, account: string, onStep?: (step: string) => void): Promise<StoredPurchase> => {
+    if (!genesis) throw new Error("not connected yet");
+    const named = wallet.accounts.find((a) => a.name === account);
+    if (!named) throw new Error("no such account");
+    const btcNetwork = bitcoinNetworkOf(network);
+    const esplora = new Esplora(btcNetwork, network.esploraUrl);
+    onStep?.("Connecting the Bitcoin wallet…");
+    const payer = await connectBitcoin(btcNetwork);
+    const payment = paymentDue(amount.planck, offer.price);
+    onStep?.("Reading the bitcoin of the wallet…");
+    const utxos = await esplora.utxos(payer.address);
+    const funds = utxos.reduce((sum, u) => sum + u.amount, 0n);
+    if (funds < payment) throw new Error(`${payer.name} has ${decimal(funds, 8)} BTC at ${payer.address}: ${decimal(payment, 8)} BTC and the fees are needed.`);
+    const paying = await Promise.all(utxos.map(async (u) => ({ ...u, rawTx: await esplora.rawTransaction(u.txid) })));
+    const key = await wallet.keypair(account);
+    const { secret, hash } = newSecret();
+    const refund = refundKey(key.seed(), hash);
+    const now = await esplora.medianTime();
+    const timelock = now + BITCOIN_LOCK_SECONDS;
+    const htlc = { hash, maker: offer.payout, taker: refund.publicKey, timelock };
+    const built = lockPsbt({
+      htlc,
+      announcement: { offer: offer.id, taker: named.address, hash, timelock, refund: refund.publicKey },
+      amount: payment,
+      payer: payer.address,
+      utxos: paying,
+      feeRate: await esplora.feeRate(2),
+      network: btcNetwork,
+    });
+    // The secret is saved before anything is signed: without it, the TESS cannot be claimed.
+    const purchase: StoredPurchase = {
+      id: `${genesis}/${hex(hash)}`,
+      genesis,
+      account,
+      taker: named.address,
+      offer: offer.id,
+      chain: "Bitcoin",
+      asset: "Native",
+      amount: amount.planck.toString(),
+      payment: payment.toString(),
+      recipient: keyHex(offer.payout),
+      sender: payer.address,
+      hash: hex(hash),
+      ...encryptSecret(key.seed(), secret),
+      fromBlock: "0",
+      timelock,
+      // The median time of Bitcoin runs about an hour behind the clock.
+      deadline: Math.floor(Date.now() / 1000) + BITCOIN_LOCK_SECONDS + 3600,
+      status: "locking",
+      createdAt: Date.now(),
+    };
+    await save(purchase);
+    onStep?.(`Confirm the payment in ${payer.name}…`);
+    let signed: { raw: Uint8Array; txid: string };
+    try {
+      signed = extractSigned(await payer.sign(built.psbt, built.inputs));
+    } catch (error) {
+      await save({ ...purchase, status: "failed", note: rejected(error) ? `Refused in ${payer.name}.` : errorText(error) });
+      throw new Error(errorText(error));
+    }
+    const locked: StoredPurchase = {
+      ...purchase,
+      lock: hex(outpointBytes(signed.txid, built.vout)),
+      bitcoin: { maker: keyHex(offer.payout), refund: keyHex(refund.publicKey), wallet: payer.name, payer: payer.address, txid: signed.txid, vout: built.vout },
+      status: "locked",
+    };
+    // Saved before the broadcast: the refund needs the output.
+    await save(locked);
+    onStep?.("Broadcasting the payment…");
+    try {
+      await esplora.broadcast(signed.raw);
+    } catch (error) {
+      await save({ ...locked, status: "failed", note: errorText(error) });
+      throw new Error(errorText(error));
+    }
+    return locked;
+  };
+
+  const refundBitcoin = async (purchase: StoredPurchase): Promise<string> => {
+    const b = purchase.bitcoin;
+    if (!b) throw new Error("no payment to take back");
+    const btcNetwork = bitcoinNetworkOf(network);
+    const esplora = new Esplora(btcNetwork, network.esploraUrl);
+    const now = await esplora.medianTime();
+    if (now <= purchase.timelock) throw new Error(`The payment can be taken back in about ${Math.ceil((purchase.timelock + 1 - now) / 3600)} hour(s), once the median time of Bitcoin passes its lock.`);
+    const key = await wallet.keypair(purchase.account);
+    const hash = unhex(purchase.hash);
+    const refund = refundKey(key.seed(), hash);
+    const htlc = { hash, maker: unhex(b.maker), taker: refund.publicKey, timelock: purchase.timelock };
+    const raw = refundTransaction({ txid: b.txid, vout: b.vout, amount: BigInt(purchase.payment), htlc }, refund.secretKey, b.payer, await esplora.feeRate(6), btcNetwork);
+    const txid = await esplora.broadcast(raw);
+    await save({ ...purchase, status: "refunded", note: undefined });
+    return txid;
+  };
+
   const buy: Market["buy"] = async (offer, amount, account, onStep) => {
     if (!genesis) throw new Error("not connected yet");
+    if (offer.payment.chain === "Bitcoin") return buyWithBitcoin(offer, amount, account, onStep);
     const evm = evmNetworkOf(network, offer.payment.chain);
-    if (!evm) throw new Error("Offers paid on Bitcoin come with the Bitcoin support of the market.");
+    if (!evm) throw new Error("This chain is not paid from the web wallet.");
     const named = wallet.accounts.find((a) => a.name === account);
     if (!named) throw new Error("no such account");
     onStep?.("Connecting the EVM wallet…");
@@ -193,6 +334,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   };
 
   const refund: Market["refund"] = async (purchase) => {
+    if (purchase.chain === "Bitcoin") return refundBitcoin(purchase);
     const evm = evmNetworkOf(network, purchase.chain);
     if (!evm || !purchase.lock) throw new Error("no payment to take back");
     const { swaps } = await connectEvm(evm);

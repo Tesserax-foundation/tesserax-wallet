@@ -19,6 +19,7 @@ import { AddressLink } from "../components/links";
 import { Sheet } from "../components/Sheet";
 import { explainError, useTransaction } from "../components/Transaction";
 import { Badge, Card, CardHeader, cx, EmptyState, ErrorState, PageHeader, SkeletonRows, Tabs } from "../components/ui";
+import { bitcoinNetworkOf, bitcoinTxUrl, bitcoinWallets } from "../lib/bitcoin";
 import { useChain } from "../lib/chain";
 import { browserWallet, connectEvm, decimal, evmNetworkOf, evmNetworksOf, evmTxUrl, hex, unhex, units } from "../lib/evm";
 import { formatTess, timeAgo } from "../lib/format";
@@ -63,6 +64,26 @@ function OffersError({ error }: { error: unknown }) {
   return <ErrorState error={error} />;
 }
 
+/** The name of the chain an offer is paid on, on this network. */
+function useChainName(chain: SwapChain): string {
+  const { network } = useChain();
+  if (chain === "Bitcoin") return network.id === "mainnet" ? "Bitcoin" : "Bitcoin testnet4";
+  return evmNetworkOf(network, chain)?.name ?? chain;
+}
+
+/** The Bitcoin wallets of this browser, once detected. */
+function useBitcoinWallets(): string[] | undefined {
+  return useQuery({ queryKey: ["bitcoin-wallets"], queryFn: bitcoinWallets, staleTime: 30_000 }).data;
+}
+
+function NoBitcoinWallet() {
+  return (
+    <p className="rounded-xl bg-warning-soft px-3 py-2.5 text-sm text-warning">
+      No Bitcoin wallet in this browser. Payments in BTC are signed by one, such as the Bitcoin account of MetaMask, Xverse or Unisat: open the web wallet in a browser that has it.
+    </p>
+  );
+}
+
 function NoBrowserWallet() {
   return (
     <p className="rounded-xl bg-warning-soft px-3 py-2.5 text-sm text-warning">
@@ -72,8 +93,7 @@ function NoBrowserWallet() {
 }
 
 function OfferRow({ offer, own, onBuy }: { offer: Offer; own: boolean; onBuy: () => void }) {
-  const { network } = useChain();
-  const evm = evmNetworkOf(network, offer.payment.chain);
+  const chainName = useChainName(offer.payment.chain);
   return (
     <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
       <div className="min-w-0">
@@ -84,7 +104,7 @@ function OfferRow({ offer, own, onBuy }: { offer: Offer; own: boolean; onBuy: ()
           </span>
         </div>
         <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
-          <Badge>{evm?.name ?? offer.payment.chain}</Badge>
+          <Badge>{chainName}</Badge>
           <span>from {formatTess(offer.minFill.planck, 2)} TESS</span>
           <span>
             {offer.completed}/{offer.fills} trades completed
@@ -96,10 +116,6 @@ function OfferRow({ offer, own, onBuy }: { offer: Offer; own: boolean; onBuy: ()
       </div>
       {own ? (
         <Badge tone="accent">Your offer</Badge>
-      ) : offer.payment.chain === "Bitcoin" ? (
-        <span className="max-w-40 text-right text-xs text-muted">
-          Paid in BTC with the command line wallet: <span className="font-mono">swap buy</span>
-        </span>
       ) : (
         <Button size="sm" onClick={onBuy}>
           Buy
@@ -110,7 +126,6 @@ function OfferRow({ offer, own, onBuy }: { offer: Offer; own: boolean; onBuy: ()
 }
 
 function BuySheet({ offer, onClose }: { offer: Offer; onClose: () => void }) {
-  const { network } = useChain();
   const { active } = useWallet();
   const market = useMarket();
   const [amount, setAmount] = useState("");
@@ -124,8 +139,11 @@ function BuySheet({ offer, onClose }: { offer: Offer; onClose: () => void }) {
     invalid = `This offer sells at least ${formatTess(offer.minFill.planck, 4)} TESS`;
   }
   const due = parsed.amount ? paymentDue(parsed.amount.planck, offer.price) : undefined;
-  const evm = evmNetworkOf(network, offer.payment.chain);
+  const chainName = useChainName(offer.payment.chain);
   const symbol = paymentSymbol(offer.payment);
+  const bitcoin = offer.payment.chain === "Bitcoin";
+  const bitcoinWalletsFound = useBitcoinWallets();
+  const payerReady = bitcoin ? (bitcoinWalletsFound?.length ?? 0) > 0 : Boolean(browserWallet());
 
   const buy = async () => {
     setSubmitted(true);
@@ -166,7 +184,7 @@ function BuySheet({ offer, onClose }: { offer: Offer; onClose: () => void }) {
             </div>
             <div className="rounded-xl bg-surface-2 p-3">
               <div className="text-xs text-muted">Paid on</div>
-              <div className="mt-0.5 font-semibold">{evm?.name ?? offer.payment.chain}</div>
+              <div className="mt-0.5 font-semibold">{chainName}</div>
             </div>
           </div>
           <AmountInput
@@ -191,15 +209,25 @@ function BuySheet({ offer, onClose }: { offer: Offer; onClose: () => void }) {
               <span className="font-medium">None: it needs no TESS</span>
             </div>
           </div>
-          <ol className="space-y-1.5 text-xs text-muted">
-            <li>1. Your EVM wallet locks the payment for the maker, for 24 hours, plus the gas of {evm?.name ?? "the chain"}.</li>
-            <li>2. The maker checks it and locks the TESS for you.</li>
-            <li>3. This wallet claims them with a secret only it knows, which then releases the payment to the maker.</li>
-          </ol>
-          {!browserWallet() && <NoBrowserWallet />}
+          {bitcoin ? (
+            <ol className="space-y-1.5 text-xs text-muted">
+              <li>1. Your Bitcoin wallet locks the payment for the maker in a script, for 24 hours, with the network fee.</li>
+              <li>2. The maker fills it after 2 confirmations, about 20 minutes, and locks the TESS for you.</li>
+              <li>3. This wallet claims them with a secret only it knows, which then releases the payment to the maker. If the maker never fills, this wallet takes the payment back after 24 hours, with a key of the account.</li>
+            </ol>
+          ) : (
+            <ol className="space-y-1.5 text-xs text-muted">
+              <li>1. Your EVM wallet locks the payment for the maker, for 24 hours, plus the gas of {chainName}.</li>
+              <li>2. The maker checks it and locks the TESS for you.</li>
+              <li>3. This wallet claims them with a secret only it knows, which then releases the payment to the maker.</li>
+            </ol>
+          )}
+          {!payerReady && (bitcoin ? bitcoinWalletsFound && <NoBitcoinWallet /> : <NoBrowserWallet />)}
           {error && <p className="rounded-xl bg-danger-soft px-3 py-2.5 text-sm text-danger">{error}</p>}
-          <Button className="w-full" onClick={buy} busy={Boolean(step)} disabled={!browserWallet()}>
-            <Wallet size={16} /> {step ?? `Pay ${due !== undefined ? `${decimal(due, paymentDecimals(offer.payment))} ` : ""}${symbol} with my EVM wallet`}
+          <Button className="w-full" onClick={buy} busy={Boolean(step)} disabled={!payerReady}>
+            <Wallet size={16} />{" "}
+            {step ??
+              `Pay ${due !== undefined ? `${decimal(due, paymentDecimals(offer.payment))} ` : ""}${symbol} with my ${bitcoin ? (bitcoinWalletsFound?.[0] ?? "Bitcoin wallet") : "EVM wallet"}`}
           </Button>
         </div>
       )}
@@ -230,7 +258,7 @@ function Purchases() {
     setError(undefined);
     try {
       const tx = await market.refund(p);
-      setDone({ id: p.id, url: evmTxUrl(evmNetworkOf(network, p.chain), tx) });
+      setDone({ id: p.id, url: p.chain === "Bitcoin" ? bitcoinTxUrl(bitcoinNetworkOf(network), tx) : evmTxUrl(evmNetworkOf(network, p.chain), tx) });
     } catch (e) {
       setError(explainError(e));
     } finally {
@@ -262,6 +290,11 @@ function Purchases() {
                 </div>
                 {p.status === "locked" && !p.note && <p className="text-xs text-muted">Claimed without fee as soon as the maker fills it. Otherwise it can be taken back {hoursLeft(p.deadline)}.</p>}
                 {p.note && <p className="text-xs text-warning">{p.note}</p>}
+                {p.bitcoin && (p.status === "locked" || p.status === "claiming") && (
+                  <a href={bitcoinTxUrl(bitcoinNetworkOf(network), p.bitcoin.txid)} target="_blank" rel="noreferrer" className="text-xs text-accent underline">
+                    The payment on mempool.space
+                  </a>
+                )}
                 {p.status === "refundable" &&
                   (done?.id === p.id ? (
                     <p className="text-xs text-success">
@@ -273,7 +306,7 @@ function Purchases() {
                       )}
                     </p>
                   ) : (
-                    <Button size="sm" variant="secondary" busy={busy === p.id} onClick={() => refund(p)} disabled={!browserWallet()}>
+                    <Button size="sm" variant="secondary" busy={busy === p.id} onClick={() => refund(p)} disabled={p.chain !== "Bitcoin" && !browserWallet()}>
                       Take back the payment
                     </Button>
                   ))}
@@ -579,7 +612,7 @@ export function Market() {
   else if (testnets) note = <Badge tone="warning">Paid on EVM testnets</Badge>;
   return (
     <Page>
-      <PageHeader title="Market" icon={<ArrowLeftRight size={20} />} subtitle="TESS for ETH, USDC and USDT on Ethereum, Base and Arbitrum, by atomic swaps.">
+      <PageHeader title="Market" icon={<ArrowLeftRight size={20} />} subtitle="TESS for BTC, and for ETH, USDC and USDT on Ethereum, Base and Arbitrum, by atomic swaps.">
         {note}
       </PageHeader>
       <div className="mb-5">
@@ -594,7 +627,7 @@ export function Market() {
       </div>
       {tab === "buy" ? <BuyTab /> : <SellTab />}
       <p className="mt-6 flex items-center gap-1.5 text-xs text-faint">
-        <ExternalLink size={12} /> The EVM side is signed by your browser EVM wallet; its keys never reach Tesserax.
+        <ExternalLink size={12} /> Payments are signed by your Bitcoin or EVM wallet; their keys never reach Tesserax.
       </p>
     </Page>
   );

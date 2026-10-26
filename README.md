@@ -19,10 +19,12 @@ extension and as a desktop application: post-quantum accounts for people and AI 
 - **Contracts**: deploy Solidity contracts compiled for PolkaVM, add deployed ones from their
   address and ABI, read them, call them through the review of every transaction, and follow
   their events.
-- **Market**: buy TESS from offers paid in ETH, USDC or USDT on Ethereum, Base or Arbitrum, by
-  atomic swaps. The browser EVM wallet (MetaMask, Rabby or any EIP-1193 wallet) locks the
-  payment; the wallet claims the TESS without fee as soon as the maker fills it, and takes the
-  payment back if the maker never does. Sell TESS: offer them, and run the maker, which fills
+- **Market**: buy TESS from offers paid in BTC, or in ETH, USDC or USDT on Ethereum, Base or Arbitrum, by
+  atomic swaps. The browser wallet locks the payment: the EVM wallet (MetaMask, Rabby or any
+  EIP-1193 wallet) or the Bitcoin one (the Bitcoin account of MetaMask, or a wallet of the Bitcoin
+  wallet standard, such as Xverse or Unisat). The wallet claims the TESS without fee as soon as
+  the maker fills it, and takes the payment back if the maker never does, a payment in BTC with a
+  key of the account. Sell TESS: offer them, and run the maker, which fills
   the offers while the wallet is open and lists the payments to collect.
 - **Payment channels**: open, top up, close and finalize channels; sign vouchers by hand; claim
   vouchers and close channels as the payee.
@@ -158,6 +160,7 @@ mainnet and the testnet are built in, in `src/lib/networks.ts`.
 | `VITE_FAUCET_URL` | Optional: faucet of a testnet, for the Get test TESS button. |
 | `VITE_EXPLORER_SUPABASE_URL`, `VITE_EXPLORER_SUPABASE_KEY` | Optional: the Supabase project of the explorer and its anon key, read-only, for the transaction history and a fast synchronization of the private balance. Without them, the history links to the explorer. |
 | `VITE_GENESIS` | Genesis hash the node must have. |
+| `VITE_ESPLORA_URL` | Optional: Esplora API of the Bitcoin network of the market (Bitcoin for the mainnet, testnet4 otherwise), instead of the one of mempool.space. |
 | `VITE_EVM_LOCAL_URL` | Development only: one local EVM chain, such as anvil with the swap contract deployed, standing for Ethereum, Base and Arbitrum in the market. |
 
 These variables apply to the network the wallet opens on. Those of another network take its

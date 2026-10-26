@@ -97,6 +97,8 @@ export interface StoredPurchase {
   timelock: number;
   deadline: number;
   trade?: number;
+  /** A payment in BTC: the keys of its script, the wallet and address paying, and its output. */
+  bitcoin?: { maker: string; refund: string; wallet: string; payer: string; txid: string; vout: number };
   status: PurchaseStatus;
   /** Why it failed, or what the user must know. */
   note?: string;

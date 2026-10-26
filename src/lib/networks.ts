@@ -23,6 +23,8 @@ export interface Network {
   test: boolean;
   /** One local EVM chain, such as anvil, standing for every EVM chain of swaps: for development. */
   evmLocalUrl?: string;
+  /** Esplora API of the Bitcoin network of swaps, instead of the one of mempool.space. */
+  esploraUrl?: string;
 }
 
 const builtIn: Record<NetworkId, Omit<Network, "indexer">> = {
@@ -85,6 +87,7 @@ function configure(id: NetworkId): Network {
     faucetUrl: faucetUrl ? trimSlash(faucetUrl) : undefined,
     indexer: indexerUrl && indexerKey ? { url: trimSlash(indexerUrl), key: indexerKey } : undefined,
     evmLocalUrl: id === "development" ? variable(id, "EVM_LOCAL_URL") : undefined,
+    esploraUrl: variable(id, "ESPLORA_URL"),
   };
 }
 
