@@ -67,7 +67,7 @@ function OffersError({ error }: { error: unknown }) {
 /** The name of the chain an offer is paid on, on this network. */
 function useChainName(chain: SwapChain): string {
   const { network } = useChain();
-  if (chain === "Bitcoin") return network.id === "mainnet" ? "Bitcoin" : "Bitcoin testnet4";
+  if (chain === "Bitcoin") return network.id === "mainnet" ? "Bitcoin" : network.bitcoinNetwork === "regtest" ? "Bitcoin regtest" : "Bitcoin testnet4";
   return evmNetworkOf(network, chain)?.name ?? chain;
 }
 
@@ -292,7 +292,7 @@ function Purchases() {
                 {p.note && <p className="text-xs text-warning">{p.note}</p>}
                 {p.bitcoin && (p.status === "locked" || p.status === "claiming") && (
                   <a href={bitcoinTxUrl(bitcoinNetworkOf(network), p.bitcoin.txid)} target="_blank" rel="noreferrer" className="text-xs text-accent underline">
-                    The payment on mempool.space
+                    See the payment
                   </a>
                 )}
                 {p.status === "refundable" &&

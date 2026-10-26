@@ -161,6 +161,7 @@ mainnet and the testnet are built in, in `src/lib/networks.ts`.
 | `VITE_EXPLORER_SUPABASE_URL`, `VITE_EXPLORER_SUPABASE_KEY` | Optional: the Supabase project of the explorer and its anon key, read-only, for the transaction history and a fast synchronization of the private balance. Without them, the history links to the explorer. |
 | `VITE_GENESIS` | Genesis hash the node must have. |
 | `VITE_ESPLORA_URL` | Optional: Esplora API of the Bitcoin network of the market (Bitcoin for the mainnet, testnet4 otherwise), instead of the one of mempool.space. |
+| `VITE_DEVELOPMENT_BITCOIN_NETWORK` | Development only: `regtest`, a Bitcoin node of one's own, with `VITE_ESPLORA_URL` (`swaps/bitcoin/esplora-regtest.mjs` of the chain). |
 | `VITE_EVM_LOCAL_URL` | Development only: one local EVM chain, such as anvil with the swap contract deployed, standing for Ethereum, Base and Arbitrum in the market. |
 
 These variables apply to the network the wallet opens on. Those of another network take its

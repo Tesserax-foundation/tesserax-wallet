@@ -10,11 +10,11 @@ import { hex } from "./evm";
 import type { Network } from "./networks";
 
 /** The Bitcoin network of a Tesserax network, through its Esplora API. */
-export const bitcoinNetworkOf = (network: Network): BitcoinNetwork => (network.id === "mainnet" ? "bitcoin" : "testnet4");
+export const bitcoinNetworkOf = (network: Network): BitcoinNetwork => network.bitcoinNetwork ?? (network.id === "mainnet" ? "bitcoin" : "testnet4");
 
 /** Transactions on mempool.space. */
 export const bitcoinTxUrl = (network: BitcoinNetwork, txid: string) =>
-  network === "bitcoin" ? `https://mempool.space/tx/${txid}` : `https://mempool.space/testnet4/tx/${txid}`;
+  network === "bitcoin" ? `https://mempool.space/tx/${txid}` : network === "regtest" ? `http://127.0.0.1:3002/tx/${txid}/status` : `https://mempool.space/testnet4/tx/${txid}`;
 
 /** A Bitcoin wallet connected: its paying address, and the signature of its inputs of a PSBT. */
 export interface BitcoinPayer {
@@ -28,6 +28,7 @@ export interface BitcoinPayer {
 const METAMASK_SCOPES: Record<BitcoinNetwork, string> = {
   bitcoin: "bip122:000000000019d6689c085ae165831e93",
   testnet4: "bip122:00000000da84f2bafbbc53dee25a72ae",
+  regtest: "bip122:regtest",
 };
 
 const base64 = (bytes: Uint8Array) => btoa(String.fromCharCode(...bytes));
@@ -89,7 +90,7 @@ async function connectStandard(wallet: Standard, network: BitcoinNetwork): Promi
       const [result] = await wallet.features["bitcoin:signTransaction"].signTransaction({
         psbt,
         inputsToSign: [{ account, signingIndexes: inputs, sigHash: "ALL" }],
-        chain: network === "bitcoin" ? "bitcoin:mainnet" : "bitcoin:testnet4",
+        chain: network === "bitcoin" ? "bitcoin:mainnet" : `bitcoin:${network}`,
       });
       return new Uint8Array(result.signedPsbt);
     },

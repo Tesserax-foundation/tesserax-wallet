@@ -25,6 +25,8 @@ export interface Network {
   evmLocalUrl?: string;
   /** Esplora API of the Bitcoin network of swaps, instead of the one of mempool.space. */
   esploraUrl?: string;
+  /** Bitcoin network of swaps on a development chain: regtest, with `esploraUrl`. */
+  bitcoinNetwork?: "regtest";
 }
 
 const builtIn: Record<NetworkId, Omit<Network, "indexer">> = {
@@ -88,6 +90,7 @@ function configure(id: NetworkId): Network {
     indexer: indexerUrl && indexerKey ? { url: trimSlash(indexerUrl), key: indexerKey } : undefined,
     evmLocalUrl: id === "development" ? variable(id, "EVM_LOCAL_URL") : undefined,
     esploraUrl: variable(id, "ESPLORA_URL"),
+    bitcoinNetwork: id === "development" && variable(id, "BITCOIN_NETWORK")?.toLowerCase() === "regtest" ? "regtest" : undefined,
   };
 }
 
