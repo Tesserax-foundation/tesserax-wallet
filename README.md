@@ -1,6 +1,6 @@
 # Tesserax Wallet
 
-The wallet of [Tesserax](https://github.com/Tesserax-labs/tesserax), on the web, as a browser
+The wallet of [Tesserax](https://github.com/Tesserax-foundation/tesserax), on the web, as a browser
 extension and as a desktop application: post-quantum accounts for people and AI agents.
 
 - **Accounts**: create an account and its 24-word recovery phrase, import one from a phrase or
