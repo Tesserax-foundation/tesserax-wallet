@@ -1,4 +1,5 @@
 import {
+  makerKey,
   paymentDecimals,
   paymentDue,
   paymentSymbol,
@@ -19,8 +20,9 @@ import { AddressLink } from "../components/links";
 import { Sheet } from "../components/Sheet";
 import { explainError, useTransaction } from "../components/Transaction";
 import { Badge, Card, CardHeader, cx, EmptyState, ErrorState, PageHeader, SkeletonRows, Tabs } from "../components/ui";
-import { bitcoinNetworkOf, bitcoinTxUrl, bitcoinWallets } from "../lib/bitcoin";
+import { bitcoinNetworkOf, bitcoinTxUrl, bitcoinWallets, connectBitcoin } from "../lib/bitcoin";
 import { useChain } from "../lib/chain";
+import type { Network } from "../lib/networks";
 import { browserWallet, connectEvm, decimal, evmNetworkOf, evmNetworksOf, evmTxUrl, hex, unhex, units } from "../lib/evm";
 import { formatTess, timeAgo } from "../lib/format";
 import { useWallet } from "../lib/session";
@@ -64,11 +66,14 @@ function OffersError({ error }: { error: unknown }) {
   return <ErrorState error={error} />;
 }
 
-/** The name of the chain an offer is paid on, on this network. */
-function useChainName(chain: SwapChain): string {
-  const { network } = useChain();
+/** The name of the chain an offer is paid on, on `network`. */
+function chainName(network: Network, chain: SwapChain): string {
   if (chain === "Bitcoin") return network.id === "mainnet" ? "Bitcoin" : network.bitcoinNetwork === "regtest" ? "Bitcoin regtest" : "Bitcoin testnet4";
   return evmNetworkOf(network, chain)?.name ?? chain;
+}
+
+function useChainName(chain: SwapChain): string {
+  return chainName(useChain().network, chain);
 }
 
 /** The Bitcoin wallets of this browser, once detected. */
@@ -373,11 +378,15 @@ function BuyTab() {
   );
 }
 
+const BITCOIN_ADDRESS = /^(bc1|tb1|bcrt1)[02-9ac-hj-np-z]{8,87}$|^[13mn2][1-9A-HJ-NP-Za-km-z]{25,34}$/;
+
 function OfferSheet({ onClose }: { onClose: () => void }) {
   const { network } = useChain();
   const { active } = useWallet();
+  const market = useMarket();
   const tx = useTransaction();
   const chains = evmNetworksOf(network);
+  const bitcoinName = useChainName("Bitcoin");
   const [chain, setChain] = useState<SwapChain>("Base");
   const [asset, setAsset] = useState<SwapAsset>("Usdc");
   const [price, setPrice] = useState("");
@@ -386,24 +395,25 @@ function OfferSheet({ onClose }: { onClose: () => void }) {
   const [payout, setPayout] = useState("");
   const [submitted, setSubmitted] = useState(false);
   const [connectError, setConnectError] = useState<string>();
-  const evm = chains.find((n) => n.chain === chain)!;
-  const assets = (["Native", "Usdc", "Usdt"] as SwapAsset[]).filter((a) => tokenOf(evm, a) !== undefined);
+  const bitcoin = chain === "Bitcoin";
+  const evm = chains.find((n) => n.chain === chain);
+  const assets = bitcoin ? (["Native"] as SwapAsset[]) : (["Native", "Usdc", "Usdt"] as SwapAsset[]).filter((a) => tokenOf(evm!, a) !== undefined);
   const payment: Payment = { chain, asset: assets.includes(asset) ? asset : "Native" };
   const parsedPrice = units(price, paymentDecimals(payment));
   const parsedAmount = parseAmount(amount, { min: 1n });
   const parsedMin = parseAmount(min, { min: 1n });
-  const payoutOk = /^0x[0-9a-fA-F]{40}$/.test(payout.trim());
+  const payoutOk = bitcoin ? !payout.trim() || BITCOIN_ADDRESS.test(payout.trim()) : /^0x[0-9a-fA-F]{40}$/.test(payout.trim());
   const errors = {
     price: parsedPrice.error ?? (parsedPrice.value === 0n ? "The price must be above zero" : undefined),
     amount: !amount ? "Enter an amount" : parsedAmount.error,
     min: parsedMin.error ?? (parsedMin.amount && parsedAmount.amount && parsedMin.amount.planck > parsedAmount.amount.planck ? "Above the amount offered" : undefined),
-    payout: payoutOk ? undefined : "An EVM address: 0x and 40 digits",
+    payout: payoutOk ? undefined : bitcoin ? "A Bitcoin address" : "An EVM address: 0x and 40 digits",
   };
 
   const fromWallet = async () => {
     setConnectError(undefined);
     try {
-      setPayout((await connectEvm(evm)).address);
+      setPayout(bitcoin ? (await connectBitcoin(bitcoinNetworkOf(network))).address : (await connectEvm(evm!)).address);
     } catch (e) {
       setConnectError(explainError(e));
     }
@@ -412,23 +422,30 @@ function OfferSheet({ onClose }: { onClose: () => void }) {
   const review = () => {
     setSubmitted(true);
     if (Object.values(errors).some(Boolean) || !parsedPrice.value || !parsedAmount.amount || !parsedMin.amount) return;
-    const offer = { payment, price: parsedPrice.value, amount: parsedAmount.amount, minFill: parsedMin.amount, payout: unhex(payout) };
+    const terms = { payment, price: parsedPrice.value, amount: parsedAmount.amount, minFill: parsedMin.amount };
+    const address = payout.trim();
     tx({
       title: "Offer TESS",
       summary: (
         <>
-          {formatTess(offer.amount.planck, 4)} <span className="text-xl text-muted">TESS</span>
+          {formatTess(terms.amount.planck, 4)} <span className="text-xl text-muted">TESS</span>
         </>
       ),
       details: [
-        ["Price", `${priceText(payment, offer.price)} per TESS`],
-        ["Paid on", evm.name],
-        ["Paid to", payout.trim()],
-        ["Smallest trade", `${formatTess(offer.minFill.planck, 4)} TESS`],
+        ["Price", `${priceText(payment, terms.price)} per TESS`],
+        ["Paid on", bitcoin ? bitcoinName : evm!.name],
+        ["Paid to", bitcoin ? (address ? `${address}, once collected` : "The Bitcoin key of this account") : address],
+        ["Smallest trade", `${formatTess(terms.minFill.planck, 4)} TESS`],
       ],
-      warning: "The TESS are held until sold or withdrawn. Trades are filled while a maker runs: here, with this wallet open, or with the command line wallet.",
-      operation: (c: TesseraxClient, key: Keypair) => c.swaps.createOffer(key, offer),
-      onDone: onClose,
+      warning: bitcoin
+        ? "Payments in BTC are locked to a Bitcoin key this wallet derives from the account: its maker fills them and collects them by itself, while it runs. The TESS are held until sold or withdrawn."
+        : "The TESS are held until sold or withdrawn. Trades are filled while a maker runs: here, with this wallet open, or with the command line wallet.",
+      // The payout of an offer in BTC: the maker key of the account, which claims the payments.
+      operation: (c: TesseraxClient, key: Keypair) => c.swaps.createOffer(key, { ...terms, payout: bitcoin ? makerKey(key.seed()).publicKey : unhex(address) }),
+      onDone: () => {
+        if (bitcoin && address && active) void market.maker.setBitcoinAddress(active.name, address);
+        onClose();
+      },
     });
   };
 
@@ -436,17 +453,32 @@ function OfferSheet({ onClose }: { onClose: () => void }) {
     <Sheet title="Sell TESS" icon={<Plus size={18} />} onClose={onClose}>
       <div className="space-y-4">
         <div className="grid grid-cols-2 gap-3">
-          <Select label="Paid on" value={chain} onChange={(v) => setChain(v as SwapChain)} options={chains.map((n) => ({ value: n.chain, label: n.name }))} />
-          <Select label="In" value={payment.asset} onChange={(v) => setAsset(v as SwapAsset)} options={assets.map((a) => ({ value: a, label: ASSET_NAMES[a] }))} />
+          <Select
+            label="Paid on"
+            value={chain}
+            onChange={(v) => {
+              setChain(v as SwapChain);
+              setPayout("");
+            }}
+            options={[{ value: "Bitcoin", label: bitcoinName }, ...chains.map((n) => ({ value: n.chain, label: n.name }))]}
+          />
+          <Select label="In" value={payment.asset} onChange={(v) => setAsset(v as SwapAsset)} options={assets.map((a) => ({ value: a, label: bitcoin ? "BTC" : ASSET_NAMES[a] }))} />
         </div>
-        <TextInput label={`Price of one TESS, in ${paymentSymbol(payment)}`} value={price} onChange={(e) => setPrice(e.target.value)} placeholder="0.05" inputMode="decimal" error={submitted ? errors.price : null} />
+        <TextInput label={`Price of one TESS, in ${paymentSymbol(payment)}`} value={price} onChange={(e) => setPrice(e.target.value)} placeholder={bitcoin ? "0.000002" : "0.05"} inputMode="decimal" error={submitted ? errors.price : null} />
         <AmountInput label="TESS offered" value={amount} onChange={setAmount} error={submitted ? (errors.amount ?? null) : null} hint={active ? <>From {active.name}</> : undefined} />
         <AmountInput label="Smallest trade, in TESS" value={min} onChange={setMin} error={submitted ? (errors.min ?? null) : null} />
         <div>
-          <TextInput label="EVM address paid" value={payout} onChange={(e) => setPayout(e.target.value)} placeholder="0x…" mono error={submitted ? (errors.payout ?? null) : null} />
-          {browserWallet() && (
+          <TextInput
+            label={bitcoin ? "Bitcoin address paid, optional" : "EVM address paid"}
+            value={payout}
+            onChange={(e) => setPayout(e.target.value)}
+            placeholder={bitcoin ? "bc1…, or the key of this account" : "0x…"}
+            mono
+            error={submitted ? (errors.payout ?? null) : null}
+          />
+          {(bitcoin || browserWallet()) && (
             <button onClick={fromWallet} className="mt-1.5 text-xs font-medium text-accent">
-              Use the address of my EVM wallet
+              Use the address of my {bitcoin ? "Bitcoin" : "EVM"} wallet
             </button>
           )}
           {connectError && <p className="mt-1.5 text-xs text-danger">{connectError}</p>}
@@ -494,8 +526,8 @@ function MakerCard() {
       />
       <div className="space-y-4 p-4 sm:p-5">
         <p className="text-sm text-muted">
-          While it runs, the wallet fills your offers for the payments locked for them, and takes back the trades that expired. Keep this tab open; for a maker that never sleeps, or for
-          offers paid in BTC, run <span className="font-mono text-xs">tesserax-wallet swap make</span>.
+          While it runs, the wallet fills your offers for the payments locked for them, and takes back the trades that expired. Payments in BTC are collected by
+          the maker itself. Keep this tab open; for a maker that never sleeps, run <span className="font-mono text-xs">tesserax-wallet swap make</span>.
         </p>
         {running ? (
           <Button variant="secondary" className="w-full" onClick={maker.stop}>
@@ -513,12 +545,16 @@ function MakerCard() {
             {collect.map(([trade, c]) => (
               <div key={trade} className="flex items-center justify-between gap-3 rounded-xl bg-surface-2 px-3 py-2.5 text-sm">
                 <span>
-                  Trade #{trade} · {evmNetworkOf(network, c.chain)?.name}
+                  Trade #{trade} · {chainName(network, c.chain)}
                   {c.deadline !== undefined && <span className="block text-xs text-warning">Before its lock expires, {hoursLeft(c.deadline)}</span>}
                 </span>
-                <Button size="sm" busy={busy === trade} onClick={() => onCollect(trade)} disabled={!browserWallet()}>
-                  Collect
-                </Button>
+                {c.chain === "Bitcoin" ? (
+                  <span className="text-xs text-muted">Collected by the maker</span>
+                ) : (
+                  <Button size="sm" busy={busy === trade} onClick={() => onCollect(trade)} disabled={!browserWallet()}>
+                    Collect
+                  </Button>
+                )}
               </div>
             ))}
             {!browserWallet() && <NoBrowserWallet />}
@@ -572,7 +608,7 @@ function SellTab() {
                 <div className="text-sm">
                   <div>
                     <span className="font-semibold">#{o.id}</span> · <span className="tabular">{formatTess(o.available.planck, 4)} TESS</span> at {priceText(o.payment, o.price)} on{" "}
-                    {evmNetworkOf(network, o.payment.chain)?.name}
+                    {chainName(network, o.payment.chain)}
                   </div>
                   <div className="mt-0.5 text-xs text-muted">
                     Paid to <span className="font-mono">{hex(o.payout)}</span> · {o.completed}/{o.fills} trades completed

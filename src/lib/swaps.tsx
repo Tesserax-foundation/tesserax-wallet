@@ -3,11 +3,16 @@
  * shown. */
 
 import {
+  addressOfKey,
   Amount,
   BITCOIN_LOCK_SECONDS,
+  claimTransaction,
   Esplora,
   EVM_CHAINS,
   extractSigned,
+  findLock,
+  makerKey,
+  MIN_CONFIRMATIONS,
   hashOf,
   lockPsbt,
   newSecret,
@@ -64,6 +69,8 @@ interface Market {
     stop(): void;
     /** Collect the payment of trade `trade` with the browser EVM wallet. */
     collect(trade: string): Promise<string>;
+    /** Where the payments in BTC of the maker of `account` go once collected. */
+    setBitcoinAddress(account: string, address: string): Promise<void>;
   };
 }
 
@@ -370,6 +377,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         busy = false;
       }
     };
+    const warned = { otherKey: false };
     const makerRound = async (key: Keypair, maker: string, state: StoredMaker) => {
       const offers = (await client.swaps.offers()).filter((o) => o.maker === maker);
       for (const chain of EVM_CHAINS) {
@@ -377,6 +385,14 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         const evm = evmNetworkOf(network, chain);
         if (mine.length === 0 || !evm) continue;
         await fillChain(key, chain, evmReader(evm), mine, state);
+      }
+      const bitcoinOffers = offers.filter((o) => o.payment.chain === "Bitcoin");
+      if (bitcoinOffers.length > 0) {
+        try {
+          await fillBitcoin(key, bitcoinOffers, state);
+        } catch (error) {
+          log(`Bitcoin offers: ${errorText(error)}`, "danger");
+        }
       }
 
       // Trades expired unclaimed: their TESS return to the offer.
@@ -394,8 +410,19 @@ export function MarketProvider({ children }: { children: ReactNode }) {
 
       // Claims reveal the secrets of the payments to collect.
       const last = Math.min(best, state.tesseraxBlock + 500);
+      let unreadable = 0;
       for (let number = state.tesseraxBlock + 1; number <= last; number++) {
-        for (const event of await client.swaps.events(number)) {
+        let events: Awaited<ReturnType<typeof client.swaps.events>>;
+        try {
+          events = await client.swaps.events(number);
+        } catch (error) {
+          // A node that is not an archive node keeps the state of its recent blocks only.
+          if (!/discarded|pinned|UnknownBlock/i.test(errorText(error))) throw error;
+          unreadable++;
+          state.tesseraxBlock = number;
+          continue;
+        }
+        for (const event of events) {
           if (event.type === "Filled" && event.trade.maker === maker && !state.trades[event.trade.id]) {
             state.trades[event.trade.id] = { chain: event.trade.payment.chain, lock: hex(event.trade.paymentLock), timelock: 0 };
           } else if (event.type === "Claimed" && state.trades[event.trade]) {
@@ -408,9 +435,23 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         }
         state.tesseraxBlock = number;
       }
+      if (unreadable > 0) log(`${unreadable} old blocks not read: the node no longer keeps their state, nor the claims they had.`, "danger");
+
+      // Payments in BTC: collected with the maker key, which this wallet holds.
+      for (const [trade, c] of Object.entries(state.collect)) {
+        if (c.chain !== "Bitcoin") continue;
+        try {
+          const txid = await collectBitcoin(key, c, state);
+          delete state.collect[trade];
+          log(txid ? `Collected the payment of trade #${trade} in BTC.` : `The payment of trade #${trade} is already spent.`, "success");
+        } catch (error) {
+          log(`Collecting the payment of trade #${trade}, again next round: ${errorText(error)}`, "danger");
+        }
+      }
 
       // Payments someone else collected.
       for (const [trade, c] of Object.entries(state.collect)) {
+        if (c.chain === "Bitcoin") continue;
         const evm = evmNetworkOf(network, c.chain);
         if (!evm) continue;
         const reader = evmReader(evm);
@@ -423,6 +464,83 @@ export function MarketProvider({ children }: { children: ReactNode }) {
           state.collect[trade] = { ...c, timelock: status.timelock, deadline: Math.floor(Date.now() / 1000) + status.timelock - now };
         }
       }
+    };
+    /** Fill the Bitcoin offers paid to the maker key of the account, for the payments the
+     * transactions to its address announce, once confirmed. */
+    const fillBitcoin = async (key: Keypair, mine: Offer[], state: StoredMaker) => {
+      const own = makerKey(key.seed());
+      const ours = mine.filter((o) => hex(o.payout) === hex(own.publicKey));
+      if (ours.length < mine.length && !warned.otherKey) {
+        warned.otherKey = true;
+        log("Bitcoin offers paid to another key, such as one of the command line wallet, are filled by their own maker.");
+      }
+      if (ours.length === 0) return;
+      const btcNetwork = bitcoinNetworkOf(network);
+      const esplora = new Esplora(btcNetwork, network.esploraUrl);
+      const [height, now] = await Promise.all([esplora.height(), esplora.medianTime()]);
+      const seen = new Set(state.bitcoinSeen ?? []);
+      const address = addressOfKey(own.publicKey, btcNetwork);
+      let after: string | undefined;
+      // The latest transactions, back to those older than a payment lock.
+      for (let page = 0; page < 8; page++) {
+        const txs = await esplora.addressTransactions(address, after);
+        let older = false;
+        for (const t of txs) {
+          if (t.time !== undefined && t.time + PAYMENT_LOCK_SECONDS < now) {
+            older = true;
+            continue;
+          }
+          if (t.height === undefined || seen.has(t.txid) || height - t.height + 1 < MIN_CONFIRMATIONS) continue;
+          const lock = findLock(await esplora.rawTransaction(t.txid), own.publicKey);
+          const offer = lock && ours.find((o) => o.id === lock.offer);
+          const lockBytes = lock && outpointBytes(lock.txid, lock.vout);
+          if (
+            !lock ||
+            !offer ||
+            lock.htlc.timelock < now + MIN_REMAINING_SECONDS ||
+            (await esplora.isSpent(lock.txid, lock.vout)) ||
+            (await client.swaps.tradeOfLock("Bitcoin", lockBytes!)) !== undefined
+          ) {
+            seen.add(t.txid);
+            continue;
+          }
+          const current = await client.swaps.offer(offer.id);
+          const amount = tessFor(lock.amount, offer.price);
+          if (!current || amount === 0n || amount > current.available.planck || (amount < current.minFill.planck && amount !== current.available.planck)) {
+            log(`A payment of ${decimal(lock.amount, 8)} BTC does not fit offer #${offer.id}: its sender takes it back.`);
+            seen.add(t.txid);
+            continue;
+          }
+          try {
+            const trade = await client.swaps.fill(key, offer.id, { taker: lock.taker, amount: new Amount(amount), hash: lock.htlc.hash, paymentLock: lockBytes! });
+            state.trades[trade] = { chain: "Bitcoin", lock: hex(lockBytes!), timelock: lock.htlc.timelock };
+            seen.add(t.txid);
+            log(`Filled trade #${trade}: ${new Amount(amount)} TESS for ${decimal(lock.amount, 8)} BTC.`, "success");
+          } catch (error) {
+            log(`Filling a payment of offer #${offer.id}: ${errorText(error)}`, "danger");
+          }
+        }
+        after = [...txs].reverse().find((t) => t.height !== undefined)?.txid;
+        if (older || txs.length < 25 || !after) break;
+      }
+      state.bitcoinSeen = [...seen].slice(-500);
+    };
+    /** Collect the payment in BTC `c` with the secret, sweeping the notices to the maker key.
+     * Returns the transaction, or nothing if the payment is already spent. */
+    const collectBitcoin = async (key: Keypair, c: StoredMaker["collect"][string], state: StoredMaker): Promise<string | undefined> => {
+      const own = makerKey(key.seed());
+      const btcNetwork = bitcoinNetworkOf(network);
+      const esplora = new Esplora(btcNetwork, network.esploraUrl);
+      const bytes = unhex(c.lock);
+      const txid = hex(bytes.slice(0, 32).reverse()).slice(2);
+      const vout = new DataView(bytes.buffer, bytes.byteOffset + 32, 4).getUint32(0, true);
+      if (await esplora.isSpent(txid, vout)) return undefined;
+      const lock = findLock(await esplora.rawTransaction(txid), own.publicKey);
+      if (!lock || lock.vout !== vout) throw new Error("this payment is not locked for the maker key of the account");
+      const address = addressOfKey(own.publicKey, btcNetwork);
+      const notices = (await esplora.utxos(address)).filter((u) => u.confirmed);
+      const raw = claimTransaction(lock, unhex(c.secret), own.secretKey, state.bitcoinAddress ?? address, await esplora.feeRate(2), btcNetwork, notices);
+      return esplora.broadcast(raw);
     };
     const fillChain = async (key: Keypair, chain: SwapChain, reader: EvmSwaps, mine: Offer[], state: StoredMaker) => {
       const head = await reader.head();
@@ -511,6 +629,12 @@ export function MarketProvider({ children }: { children: ReactNode }) {
         setMakerAccount(undefined);
       },
       collect,
+      setBitcoinAddress: async (account, address) => {
+        const owner = wallet.accounts.find((a) => a.name === account);
+        if (!genesis || !owner) return;
+        const state = (await getMaker(genesis, owner.address)) ?? emptyMaker();
+        await putMaker(genesis, owner.address, { ...state, bitcoinAddress: address });
+      },
     },
   };
   return <MarketContext.Provider value={value}>{children}</MarketContext.Provider>;

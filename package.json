@@ -27,7 +27,7 @@
     "@tanstack/react-query": "5.104.5",
     "@tauri-apps/api": "2.12.4",
     "@tauri-apps/plugin-opener": "2.7.2",
-    "@tesserax/sdk": "file:vendor/tesserax-sdk-0.5.2.tgz",
+    "@tesserax/sdk": "file:vendor/tesserax-sdk-0.6.2.tgz",
     "@wallet-standard/core": "^1.1.2",
     "lucide-react": "1.60.0",
     "polkadot-api": "3.2.2",

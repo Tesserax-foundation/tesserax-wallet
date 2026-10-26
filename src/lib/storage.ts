@@ -115,6 +115,10 @@ export interface StoredMaker {
   /** Payments to collect: their secret, revealed by the claim, and when their lock expires on the
    * clock of this computer, once read. */
   collect: Record<string, { chain: SwapChain; lock: string; timelock: number; secret: string; deadline?: number }>;
+  /** Bitcoin transactions to the maker key already read: filled, or not a payment that fits. */
+  bitcoinSeen?: string[];
+  /** Where the payments in BTC go once collected; the address of the maker key otherwise. */
+  bitcoinAddress?: string;
 }
 
 export interface StoredShielded {
