@@ -54,6 +54,10 @@ Every operation can be paid from an owner's budget when the account holds a dele
 - Dependencies are pinned. Cryptography comes from the audited `@noble` libraries and the
   Tesserax SDK.
 
+Vulnerabilities are rewarded in TESS: report them privately with **Security → Report a
+vulnerability** on this repository. See [SECURITY.md](SECURITY.md) and the
+[bug bounty](https://github.com/Tesserax-foundation/tesserax/blob/main/docs/bug-bounty.md).
+
 ## Browser extension
 
 The same wallet, in the toolbar of Chromium browsers (Chrome, Brave, Edge, Arc) and Firefox,
@@ -191,4 +195,4 @@ headers. Elsewhere, serve `dist/` with the same headers and the same rewrite.
 
 ## License
 
-Apache-2.0.
+Apache-2.0, see [LICENSE](LICENSE).
