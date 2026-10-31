@@ -65,6 +65,8 @@ export interface StoredContract {
 const PURCHASES = "purchases";
 /** What a maker has read and has to collect, by chain and account: `<genesis>/<address>`. */
 const MAKERS = "makers";
+/** Sales of TESS into bids, by chain: `<genesis>/<hash>`. */
+const SALES = "sales";
 
 export type PurchaseStatus = "locking" | "locked" | "claiming" | "claimed" | "refundable" | "refunded" | "failed";
 
@@ -105,6 +107,68 @@ export interface StoredPurchase {
   createdAt: number;
 }
 
+export type SaleStatus =
+  /** The secret is saved, the sale submitted. */
+  | "selling"
+  /** Made: the buyer has to lock the payment. */
+  | "waiting"
+  /** The buyer recorded a payment: checked, on Bitcoin once confirmed. */
+  | "paid"
+  /** The payment is checked: to claim. */
+  | "verified"
+  | "claiming"
+  /** The payment is claimed: the TESS go to the buyer. */
+  | "collected"
+  | "done"
+  /** The payment does not fit: never claimed, the TESS return once the sale expires. */
+  | "refused"
+  /** Expired without being paid: the TESS can be taken back. */
+  | "expired"
+  | "refunded"
+  | "failed";
+
+export interface StoredSale {
+  /** `<genesis>/<hash>`. */
+  id: string;
+  genesis: string;
+  /** Account selling: its name, and its address. */
+  account: string;
+  seller: string;
+  bid: number;
+  buyer: string;
+  /** The sale on Tesserax, once made. */
+  sale?: number;
+  chain: SwapChain;
+  asset: SwapAsset;
+  /** TESS sold, in planck; the price and the payment due, in the smallest unit of the asset. */
+  amount: string;
+  price: string;
+  payment: string;
+  /** What the buyer pays, hexadecimal: an EVM address, or the Bitcoin key of the account. */
+  payout: string;
+  /** Where a payment in BTC goes once claimed; the address of the key otherwise. */
+  bitcoinAddress?: string;
+  /** SHA-256 hash of the secret, hexadecimal; the secret, encrypted with a key of the account. */
+  hash: string;
+  nonce: Uint8Array;
+  ciphertext: Uint8Array;
+  /** Last block of the sale, and that time on the clock of this computer. */
+  expires?: number;
+  deadline?: number;
+  /** The lock of the payment, hexadecimal, and when its buyer can take it back on the clock of
+   * this computer. */
+  lock?: string;
+  lockDeadline?: number;
+  /** Whether the secret may be public: a claim of the payment was sent. */
+  revealed?: boolean;
+  /** The transaction claiming the payment. */
+  claim?: string;
+  status: SaleStatus;
+  /** Why it failed, or what the user must know. */
+  note?: string;
+  createdAt: number;
+}
+
 export interface StoredMaker {
   /** Last EVM block read on each chain, as a decimal string. */
   evmBlocks: Partial<Record<SwapChain, string>>;
@@ -132,7 +196,7 @@ let database: Promise<IDBDatabase> | undefined;
 
 function open(): Promise<IDBDatabase> {
   database ??= new Promise((resolve, reject) => {
-    const request = indexedDB.open(DATABASE, 4);
+    const request = indexedDB.open(DATABASE, 5);
     request.onupgradeneeded = (event) => {
       if (event.oldVersion < 1) {
         request.result.createObjectStore(ACCOUNTS, { keyPath: "name" });
@@ -144,6 +208,7 @@ function open(): Promise<IDBDatabase> {
         request.result.createObjectStore(PURCHASES, { keyPath: "id" }).createIndex("genesis", "genesis");
         request.result.createObjectStore(MAKERS);
       }
+      if (event.oldVersion < 5) request.result.createObjectStore(SALES, { keyPath: "id" }).createIndex("genesis", "genesis");
     };
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error("cannot open the wallet storage"));
@@ -214,6 +279,11 @@ export const listPurchases = async (genesis: string) =>
   (await run<StoredPurchase[]>(PURCHASES, "readonly", (s) => s.index("genesis").getAll(genesis))).sort((a, b) => b.createdAt - a.createdAt);
 
 export const putPurchase = (purchase: StoredPurchase) => run(PURCHASES, "readwrite", (s) => s.put(purchase));
+
+export const listSales = async (genesis: string) =>
+  (await run<StoredSale[]>(SALES, "readonly", (s) => s.index("genesis").getAll(genesis))).sort((a, b) => b.createdAt - a.createdAt);
+
+export const putSale = (sale: StoredSale) => run(SALES, "readwrite", (s) => s.put(sale));
 
 export const getMaker = (genesis: string, address: string) => run<StoredMaker | undefined>(MAKERS, "readonly", (s) => s.get(`${genesis}/${address}`));
 

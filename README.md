@@ -25,7 +25,9 @@ extension and as a desktop application: post-quantum accounts for people and AI 
   wallet standard, such as Xverse or Unisat). The wallet claims the TESS without fee as soon as
   the maker fills it, and takes the payment back if the maker never does, a payment in BTC with a
   key of the account. Sell TESS: offer them, and run the maker, which fills
-  the offers while the wallet is open and lists the payments to collect.
+  the offers while the wallet is open and lists the payments to collect; or sell at once into a
+  bid: the wallet checks the payment the buyer locks, claims it, and only then hands the TESS
+  over, or lets you take them back after 24 hours if the buyer never pays.
 - **Payment channels**: open, top up, close and finalize channels; sign vouchers by hand; claim
   vouchers and close channels as the payee.
 - **Task market**: create tasks with the reward in escrow, an arbiter and a worker bond; accept,

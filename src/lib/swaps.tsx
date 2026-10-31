@@ -1,5 +1,6 @@
-/** The market of the wallet: purchases of TESS, claimed as soon as their maker fills them, and the
- * maker of an account, which fills its offers while the wallet is open. Both run whatever page is
+/** The market of the wallet: purchases of TESS, claimed as soon as their maker fills them; sales
+ * into bids, whose payment is checked and claimed as soon as their buyer locks it; and the maker
+ * of an account, which fills its offers while the wallet is open. They run whatever page is
  * shown. */
 
 import {
@@ -23,20 +24,25 @@ import {
   refundKey,
   refundTransaction,
   tessFor,
+  type Bid,
+  type BitcoinLock,
   type EvmSwaps,
   type Keypair,
   type Offer,
+  type Sale,
   type SwapChain,
+  type TesseraxClient,
 } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import type { Address } from "viem";
 import { bitcoinNetworkOf, connectBitcoin, keyHex } from "./bitcoin";
 import { useChain } from "./chain";
-import { connectEvm, decimal, evmNetworkOf, evmReader, hex, unhex } from "./evm";
-import { decryptSecret, encryptSecret, LOCK_SEARCH_SECONDS, MIN_REMAINING_SECONDS, PAYMENT_LOCK_SECONDS, ROUND_SECONDS } from "./market";
+import { browserWallet, connectEvm, decimal, evmNetworkOf, evmReader, hex, unhex } from "./evm";
+import { TARGET_BLOCK_SECONDS } from "./format";
+import { decryptSecret, encryptSecret, LOCK_SEARCH_SECONDS, MIN_REMAINING_SECONDS, PAYMENT_LOCK_SECONDS, ROUND_SECONDS, salePaymentProblem } from "./market";
 import { useWallet } from "./session";
-import { getMaker, listPurchases, putMaker, putPurchase, type StoredMaker, type StoredPurchase } from "./storage";
+import { getMaker, listPurchases, listSales, putMaker, putPurchase, putSale, type StoredMaker, type StoredPurchase, type StoredSale } from "./storage";
 
 /** Whether the browser wallet refused the request. */
 const rejected = (error: unknown) => (error as { code?: number }).code === 4001 || /reject|denied/i.test((error as Error).message ?? "");
@@ -45,6 +51,22 @@ const errorText = (error: unknown) => {
   const message = error instanceof Error ? ((error as { shortMessage?: string }).shortMessage ?? error.message) : String(error);
   return message.split("\n")[0];
 };
+
+/** The transaction id and output of a payment lock on Bitcoin. */
+const outpointOf = (bytes: Uint8Array) => ({ txid: hex(bytes.slice(0, 32).reverse()).slice(2), vout: new DataView(bytes.buffer, bytes.byteOffset + 32, 4).getUint32(0, true) });
+
+/** Sales the wallet no longer follows. */
+const SALE_OVER = new Set<StoredSale["status"]>(["done", "refunded", "failed"]);
+
+/** What the check of the payment of a sale found: why it is not claimed, what it waits for, or the
+ * lock to claim. */
+interface SaleCheck {
+  problem?: string;
+  wait?: string;
+  lock?: string;
+  lockDeadline?: number;
+  bitcoin?: BitcoinLock;
+}
 
 export interface MakerActivity {
   at: number;
@@ -60,6 +82,16 @@ interface Market {
   buy(offer: Offer, amount: Amount, account: string, onStep?: (step: string) => void): Promise<StoredPurchase>;
   /** Take back the payment of a purchase the maker never filled. */
   refund(purchase: StoredPurchase): Promise<string>;
+  sales: StoredSale[];
+  /** Sell `amount` TESS of `account` into `bid`, paid to `payout`: an EVM address, or the Bitcoin
+   * key of the account, whose payment goes to `bitcoinAddress` if given. The secret is saved
+   * first; the sale is submitted through `client`, signed by `key`. The payment is then checked
+   * and claimed as soon as the buyer locks it. */
+  sell(client: TesseraxClient, key: Keypair, bid: Bid, amount: Amount, account: string, payout: Uint8Array, bitcoinAddress?: string): Promise<StoredSale>;
+  /** Claim the payment in ETH, USDC or USDT of a sale with the browser EVM wallet, once checked. */
+  claimSale(sale: StoredSale): Promise<string>;
+  /** Record that the TESS of a sale were taken back. */
+  saleRefunded(sale: StoredSale): Promise<void>;
   maker: {
     /** Name of the account whose offers are filled, while running. */
     account?: string;
@@ -89,6 +121,7 @@ export function MarketProvider({ children }: { children: ReactNode }) {
   const wallet = useWallet();
   const genesis = useQuery({ queryKey: ["genesis", url], queryFn: async () => hex(await client.genesisHash()), staleTime: Infinity }).data;
   const [purchases, setPurchases] = useState<StoredPurchase[]>([]);
+  const [sales, setSales] = useState<StoredSale[]>([]);
   const [makerAccount, setMakerAccount] = useState<string>();
   const [makerState, setMakerState] = useState<StoredMaker>();
   const [activity, setActivity] = useState<MakerActivity[]>([]);
@@ -106,6 +139,19 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       await reload();
     },
     [reload],
+  );
+
+  const reloadSales = useCallback(async () => {
+    if (genesis) setSales(await listSales(genesis));
+  }, [genesis]);
+  useEffect(() => void reloadSales(), [reloadSales]);
+
+  const saveSale = useCallback(
+    async (sale: StoredSale) => {
+      await putSale(sale);
+      await reloadSales();
+    },
+    [reloadSales],
   );
 
   const log = useCallback((text: string, tone?: MakerActivity["tone"]) => setActivity((a) => [{ at: Date.now(), text, tone }, ...a].slice(0, 50)), []);
@@ -351,6 +397,284 @@ export function MarketProvider({ children }: { children: ReactNode }) {
       return tx;
     } catch (error) {
       throw new Error(errorText(error));
+    }
+  };
+
+  // Sales: the payment a buyer locks is checked, claimed with the secret, and the secret then
+  // claims the TESS for the buyer.
+  const saleInFlight = useRef(new Set<string>());
+  const saleTried = useRef(new Set<string>());
+
+  /** The secret of `s`, with the key of its account. */
+  const saleSecret = useCallback(async (s: StoredSale) => {
+    const key = await keypair.current(s.account);
+    const secret = decryptSecret(key.seed(), s.nonce, s.ciphertext);
+    if (hex(hashOf(secret)) !== s.hash) throw new Error("the secret saved does not match the sale");
+    return { key, secret };
+  }, []);
+
+  /** Check the payment the buyer of `sale` recorded, before anything is revealed. */
+  const checkSalePayment = useCallback(
+    async (s: StoredSale, sale: Sale): Promise<SaleCheck> => {
+      if (hex(sale.hash) !== s.hash || hex(sale.payout).toLowerCase() !== s.payout.toLowerCase()) return { problem: "the sale on Tesserax is not the one this wallet made" };
+      const terms = { hash: sale.hash, payout: sale.payout, due: paymentDue(sale.amount.planck, sale.price), payment: sale.payment };
+      const lock = hex(sale.paymentLock);
+      if (sale.payment.chain === "Bitcoin") {
+        if (sale.paymentLock.length !== 36) return { lock, problem: "the payment recorded is not a Bitcoin output" };
+        const { txid, vout } = outpointOf(sale.paymentLock);
+        const esplora = new Esplora(bitcoinNetworkOf(network), network.esploraUrl);
+        // An unconfirmed payment can be replaced: the secret is revealed only once it is buried.
+        const confirmations = await esplora.confirmations(txid);
+        if (confirmations === undefined) return { lock, wait: "The payment is not on Bitcoin yet." };
+        if (confirmations < MIN_CONFIRMATIONS) return { lock, wait: `Payment found: ${confirmations}/${MIN_CONFIRMATIONS} confirmations.` };
+        const found = findLock(await esplora.rawTransaction(txid), sale.payout);
+        if (!found || found.vout !== vout) return { lock, problem: "the payment recorded is not locked for your key" };
+        const [now, spent] = await Promise.all([esplora.medianTime(), esplora.isSpent(txid, vout)]);
+        const paid = { state: spent ? "Spent" : "Locked", hash: found.htlc.hash, recipient: found.htlc.maker, amount: found.amount, timelock: found.htlc.timelock };
+        return { lock, problem: salePaymentProblem(paid, terms, now), lockDeadline: Math.floor(Date.now() / 1000) + found.htlc.timelock - now, bitcoin: found };
+      }
+      const evm = evmNetworkOf(network, sale.payment.chain);
+      if (!evm) return { lock, wait: "This chain is not read by the web wallet." };
+      if (sale.paymentLock.length !== 32) return { lock, problem: "the payment recorded is not a lock" };
+      const reader = evmReader(evm);
+      const [status, head] = await Promise.all([reader.lockStatus(lock), reader.head()]);
+      if (!status) return { lock, problem: "the payment recorded is not a lock" };
+      const paid = { state: status.state, hash: status.hash, recipient: unhex(status.recipient), amount: reader.amountOf(status, sale.payment), timelock: status.timelock };
+      return { lock, problem: salePaymentProblem(paid, terms, head.time), lockDeadline: Math.floor(Date.now() / 1000) + status.timelock - head.time };
+    },
+    [network],
+  );
+
+  const refusedSale = (s: StoredSale, check: SaleCheck): StoredSale => ({
+    ...s,
+    lock: check.lock ?? s.lock,
+    status: "refused",
+    note: `${check.problem!.charAt(0).toUpperCase()}${check.problem!.slice(1)}: not claimed. The TESS return to you once the sale expires.`,
+  });
+
+  /** Claim the TESS of `s` for its buyer with the secret, public now: without fee, and the buyer
+   * may have claimed them already. */
+  const deliverSale = useCallback(
+    async (s: StoredSale): Promise<StoredSale> => {
+      const { secret } = await saleSecret(s);
+      try {
+        await client.swaps.claimSale(s.sale!, secret);
+      } catch (error) {
+        // Claimed already, or too late for the buyer.
+        if (!/stale|already|outdated|banned|UnknownSale|Expired/i.test(errorText(error))) throw error;
+      }
+      return { ...s, status: "done", note: undefined };
+    },
+    [client, saleSecret],
+  );
+
+  /** Claim the payment in BTC of `s`, checked, with the Bitcoin key of its account. */
+  const claimBitcoinSale = useCallback(
+    async (s: StoredSale, found: BitcoinLock): Promise<StoredSale> => {
+      const { key, secret } = await saleSecret(s);
+      const own = makerKey(key.seed());
+      if (hex(own.publicKey) !== s.payout) throw new Error("the sale is paid to another Bitcoin key than the one of the account");
+      const btcNetwork = bitcoinNetworkOf(network);
+      const esplora = new Esplora(btcNetwork, network.esploraUrl);
+      const address = addressOfKey(own.publicKey, btcNetwork);
+      // The notices of payments to the key are swept with it.
+      const notices = (await esplora.utxos(address)).filter((u) => u.confirmed);
+      const raw = claimTransaction(found, secret, own.secretKey, s.bitcoinAddress ?? address, await esplora.feeRate(2), btcNetwork, notices);
+      // Recorded before the broadcast: once sent, the secret is public.
+      await saveSale({ ...s, status: "claiming", revealed: true });
+      let txid: string;
+      try {
+        txid = await esplora.broadcast(raw);
+      } catch (error) {
+        // Checked and sent again next round.
+        return { ...s, status: "verified", revealed: true, note: errorText(error) };
+      }
+      const collected: StoredSale = { ...s, status: "collected", revealed: true, claim: txid, note: undefined };
+      await saveSale(collected);
+      return collected;
+    },
+    [network, saveSale, saleSecret],
+  );
+
+  const claimSale: Market["claimSale"] = useCallback(
+    async (s) => {
+      const evm = evmNetworkOf(network, s.chain);
+      if (!evm || s.sale === undefined) throw new Error("no payment to claim");
+      if (saleInFlight.current.has(s.id)) throw new Error("The claim is already waiting for the EVM wallet.");
+      saleInFlight.current.add(s.id);
+      try {
+        const sale = await client.swaps.sale(s.sale);
+        if (!sale) throw new Error("This sale is over.");
+        // Checked again right before the secret is revealed.
+        const check = await checkSalePayment(s, sale);
+        if (check.problem) {
+          const refused = refusedSale(s, check);
+          await saveSale(refused);
+          throw new Error(refused.note);
+        }
+        if (check.wait || !check.lock) throw new Error(check.wait ?? "The buyer has not paid yet.");
+        const { secret } = await saleSecret(s);
+        const { swaps } = await connectEvm(evm);
+        const lock = check.lock as `0x${string}`;
+        const claiming: StoredSale = { ...s, lock, lockDeadline: check.lockDeadline, status: "claiming", revealed: true, note: undefined };
+        // Recorded before the claim: once sent, the secret is public.
+        await saveSale(claiming);
+        let tx: string;
+        try {
+          tx = await swaps.claim(lock, secret);
+        } catch (error) {
+          const status = await swaps.lockStatus(lock).catch(() => undefined);
+          if (status?.state === "Claimed") {
+            await saveSale({ ...claiming, status: "collected" });
+            return "";
+          }
+          // Refused in the wallet: nothing was sent. Otherwise the secret may be public.
+          const refusedHere = rejected(error);
+          await saveSale({
+            ...claiming,
+            status: "verified",
+            revealed: refusedHere ? s.revealed : true,
+            note: refusedHere ? "Refused in the EVM wallet: claim the payment before its lock expires." : errorText(error),
+          });
+          throw new Error(errorText(error));
+        }
+        await saveSale({ ...claiming, status: "collected", claim: tx });
+        return tx;
+      } finally {
+        saleInFlight.current.delete(s.id);
+      }
+    },
+    [client, network, checkSalePayment, saleSecret, saveSale],
+  );
+
+  useEffect(() => {
+    if (!genesis) return;
+    let busy = false;
+    const round = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        const followed = (await listSales(genesis)).filter(
+          (s) => !SALE_OVER.has(s.status) || (s.status === "failed" && s.sale === undefined && Date.now() - s.createdAt < LOCK_SEARCH_SECONDS * 1000),
+        );
+        if (followed.length === 0) return;
+        const best = await client.bestBlockNumber();
+        let onChain: Promise<Sale[]> | undefined;
+        const made = () => (onChain ??= client.swaps.sales());
+        for (const s of followed) {
+          let next: StoredSale | undefined;
+          try {
+            next = await advance(s, best, made);
+          } catch (error) {
+            // Tried again next round; what waits for the user shows why.
+            console.warn(`Sale ${s.hash}:`, error);
+            if ((s.status === "verified" || s.status === "collected") && s.note !== errorText(error)) next = { ...s, note: errorText(error) };
+          }
+          // A claim through the EVM wallet records its own progress.
+          if (next && !saleInFlight.current.has(s.id)) await saveSale(next);
+          const latest = next ?? s;
+          // A payment checked is claimed through the EVM wallet once per visit, then from its button.
+          if (latest.status === "verified" && latest.chain !== "Bitcoin" && browserWallet() && !saleTried.current.has(latest.id)) {
+            saleTried.current.add(latest.id);
+            void claimSale(latest).catch((error) => console.warn(`Sale ${latest.hash}:`, error));
+          }
+        }
+      } finally {
+        busy = false;
+      }
+    };
+    /** The last block of a sale, and that time on the clock of this computer. */
+    const times = (expires: number, best: number) => ({ expires, deadline: Math.floor(Date.now() / 1000) + (expires - best) * TARGET_BLOCK_SECONDS });
+    /** A claim of the payment was sent: claimed, or to send again. */
+    const claimed = async (s: StoredSale, sale: Sale | undefined): Promise<StoredSale | undefined> => {
+      if (!s.lock) return { ...s, status: "verified" };
+      if (s.chain === "Bitcoin") {
+        const { txid, vout } = outpointOf(unhex(s.lock));
+        if (await new Esplora(bitcoinNetworkOf(network), network.esploraUrl).isSpent(txid, vout)) return { ...s, status: "collected", note: undefined };
+      } else {
+        const evm = evmNetworkOf(network, s.chain);
+        if (!evm) return undefined;
+        const status = await evmReader(evm).lockStatus(s.lock as `0x${string}`);
+        if (status?.state === "Claimed") return { ...s, status: "collected", note: undefined };
+        if (status?.state === "Refunded") return { ...s, status: "refused", note: "The buyer took the payment back before it was claimed." };
+      }
+      // Not sent: checked and claimed again while the sale lasts.
+      return sale ? { ...s, status: "verified" } : { ...s, status: "done" };
+    };
+    const advance = async (s: StoredSale, best: number, made: () => Promise<Sale[]>): Promise<StoredSale | undefined> => {
+      if (s.sale === undefined) {
+        // Submitted: found on the node even if the wallet closed before its inclusion.
+        const found = (await made()).find((x) => hex(x.hash) === s.hash && x.seller === s.seller);
+        if (found) return { ...s, sale: found.id, ...times(found.expires, best), status: "waiting", note: undefined };
+        if (s.status === "selling" && Date.now() - s.createdAt > LOCK_SEARCH_SECONDS * 1000) return { ...s, status: "failed", note: "The sale was not made." };
+        return undefined;
+      }
+      if (saleInFlight.current.has(s.id)) return undefined;
+      const sale = await client.swaps.sale(s.sale);
+      if (s.status === "claiming") return claimed(s, sale);
+      if (s.status === "collected") return !sale || best > sale.expires ? { ...s, status: "done", note: undefined } : deliverSale(s);
+      // Gone: claimed for the buyer with the secret a claim of the payment revealed, or taken back.
+      if (!sale) return { ...s, status: s.revealed ? "done" : "refunded", note: undefined };
+      if (best > sale.expires) {
+        if (s.status === "expired") return undefined;
+        const note = s.status === "refused" ? s.note : s.lock ? "The payment was not claimed in time." : "The buyer did not pay in time.";
+        return { ...s, ...times(sale.expires, best), status: "expired", note };
+      }
+      if (s.status === "expired" || s.status === "refused") return undefined;
+      if (sale.paymentLock.length === 0) return s.expires === sale.expires ? undefined : { ...s, ...times(sale.expires, best) };
+      // A claim already sent, though its answer was lost.
+      if (s.revealed && s.lock) {
+        const sent = await claimed(s, sale);
+        if (sent && sent.status !== "verified") return sent;
+      }
+      const check = await checkSalePayment(s, sale);
+      if (check.problem) return refusedSale(s, check);
+      if (check.wait) return s.status === "paid" && s.note === check.wait ? undefined : { ...s, ...times(sale.expires, best), lock: check.lock, status: "paid", note: check.wait };
+      const verified: StoredSale = { ...s, ...times(sale.expires, best), lock: check.lock, lockDeadline: check.lockDeadline, status: "verified", note: s.status === "verified" ? s.note : undefined };
+      if (check.bitcoin) return claimBitcoinSale(verified, check.bitcoin);
+      return s.status === "verified" && s.lock === check.lock ? undefined : verified;
+    };
+    void round();
+    const timer = setInterval(round, ROUND_SECONDS * 1000);
+    return () => clearInterval(timer);
+  }, [genesis, client, network, saveSale, checkSalePayment, deliverSale, claimBitcoinSale, claimSale]);
+
+  const sell: Market["sell"] = async (c, key, bid, amount, account, payout, bitcoinAddress) => {
+    if (!genesis) throw new Error("not connected yet");
+    const named = wallet.accounts.find((a) => a.name === account);
+    if (!named) throw new Error("no such account");
+    if (bid.payment.chain === "Bitcoin" && hex(payout) !== hex(makerKey(key.seed()).publicKey)) throw new Error("A sale in BTC is paid to the Bitcoin key of its account.");
+    const { secret, hash } = newSecret();
+    const sale: StoredSale = {
+      id: `${genesis}/${hex(hash)}`,
+      genesis,
+      account,
+      seller: named.address,
+      bid: bid.id,
+      buyer: bid.buyer,
+      chain: bid.payment.chain,
+      asset: bid.payment.asset,
+      amount: amount.planck.toString(),
+      price: bid.price.toString(),
+      payment: paymentDue(amount.planck, bid.price).toString(),
+      payout: hex(payout),
+      bitcoinAddress: bitcoinAddress || undefined,
+      hash: hex(hash),
+      ...encryptSecret(key.seed(), secret),
+      status: "selling",
+      createdAt: Date.now(),
+    };
+    // The secret is saved before the TESS are locked: without it, the payment cannot be claimed.
+    await saveSale(sale);
+    try {
+      const id = await c.swaps.sell(key, bid.id, { amount, hash, payout });
+      const made: StoredSale = { ...sale, sale: id, status: "waiting" };
+      await saveSale(made);
+      return made;
+    } catch (error) {
+      // Searched a while all the same, in case it was made.
+      await saveSale({ ...sale, status: "failed", note: errorText(error).replace(/^transaction (failed|refused): /, "") });
+      throw error;
     }
   };
 
@@ -616,6 +940,10 @@ export function MarketProvider({ children }: { children: ReactNode }) {
     purchases,
     buy,
     refund,
+    sales,
+    sell,
+    claimSale,
+    saleRefunded: (sale) => saveSale({ ...sale, status: "refunded", note: undefined }),
     maker: {
       account: makerAccount,
       state: makerState,

@@ -1,9 +1,12 @@
 import {
+  addressOfKey,
+  Amount,
   makerKey,
   paymentDecimals,
   paymentDue,
   paymentSymbol,
   tokenOf,
+  type Bid,
   type Keypair,
   type Offer,
   type Payment,
@@ -12,8 +15,8 @@ import {
   type TesseraxClient,
 } from "@tesserax/sdk";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeftRight, CircleCheck, Clock, Coins, ExternalLink, Play, Plus, Square, Store, Wallet } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { ArrowLeftRight, Circle, CircleAlert, CircleCheck, Clock, Coins, ExternalLink, HandCoins, Loader2, Play, Plus, Square, Store, Wallet } from "lucide-react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AmountInput, Button, parseAmount, Select, TextInput } from "../components/forms";
 import { Page } from "../components/Layout";
 import { AddressLink } from "../components/links";
@@ -21,12 +24,12 @@ import { Sheet } from "../components/Sheet";
 import { explainError, useTransaction } from "../components/Transaction";
 import { Badge, Card, CardHeader, cx, EmptyState, ErrorState, PageHeader, SkeletonRows, Tabs } from "../components/ui";
 import { bitcoinNetworkOf, bitcoinTxUrl, bitcoinWallets, connectBitcoin } from "../lib/bitcoin";
-import { useChain } from "../lib/chain";
+import { estimateFee, useBalance, useChain } from "../lib/chain";
 import type { Network } from "../lib/networks";
 import { browserWallet, connectEvm, decimal, evmNetworkOf, evmNetworksOf, evmTxUrl, hex, unhex, units } from "../lib/evm";
 import { formatTess, timeAgo } from "../lib/format";
 import { useWallet } from "../lib/session";
-import type { StoredPurchase } from "../lib/storage";
+import type { SaleStatus, StoredPurchase, StoredSale } from "../lib/storage";
 import { useMarket } from "../lib/swaps";
 
 const priceText = (payment: Payment, price: bigint) => `${decimal(price, paymentDecimals(payment))} ${paymentSymbol(payment)}`;
@@ -575,65 +578,554 @@ function MakerCard() {
   );
 }
 
+/** The chain has no bids before the runtime upgrade that brings them. */
+class NoBids extends Error {}
+
+function useBids() {
+  const { client, url } = useChain();
+  return useQuery({
+    queryKey: ["bids", url],
+    queryFn: async () => {
+      try {
+        return await client.swaps.bids();
+      } catch (error) {
+        if (/Bids|Swaps/.test(String((error as Error).message))) throw new NoBids();
+        throw error;
+      }
+    },
+    refetchInterval: 18_000,
+    retry: (count, error) => !(error instanceof NoBids) && count < 1,
+  });
+}
+
+function BidRow({ bid, own, supported, onSell }: { bid: Bid; own: boolean; supported: boolean; onSell: () => void }) {
+  const chainName = useChainName(bid.payment.chain);
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-baseline gap-x-2">
+          <span className="font-semibold tabular">{priceText(bid.payment, bid.price)}</span>
+          <span className="text-sm text-muted">
+            per TESS, for <span className="font-medium text-fg tabular">{formatTess(bid.wanted.planck, 2)} TESS</span>
+          </span>
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+          <Badge>{chainName}</Badge>
+          <span>from {formatTess(bid.minSale.planck, 2)} TESS</span>
+          <span>
+            {bid.completed}/{bid.sales} sales paid
+          </span>
+          <span className="inline-flex items-center gap-1">
+            by <AddressLink address={bid.buyer} />
+          </span>
+        </div>
+      </div>
+      {own ? (
+        <Badge tone="accent">Your bid</Badge>
+      ) : (
+        <Button size="sm" onClick={onSell} disabled={!supported}>
+          Sell
+        </Button>
+      )}
+    </li>
+  );
+}
+
+function BidsCard({ bids }: { bids: ReturnType<typeof useBids> }) {
+  const { active } = useWallet();
+  const { network } = useChain();
+  const bitcoinName = useChainName("Bitcoin");
+  const [selling, setSelling] = useState<Bid | null>(null);
+  const [chain, setChain] = useState<SwapChain | "">("");
+  const shown = (bids.data ?? []).filter((b) => (!chain || b.payment.chain === chain) && b.wanted.planck > 0n);
+  // The best price first: one asset of one chain at a time compares.
+  shown.sort((a, b) => a.payment.chain.localeCompare(b.payment.chain) || a.payment.asset.localeCompare(b.payment.asset) || (a.price > b.price ? -1 : a.price < b.price ? 1 : 0));
+
+  return (
+    <>
+      <Card>
+        <CardHeader
+          title="Bids"
+          icon={<HandCoins size={16} />}
+          action={
+            <select value={chain} onChange={(e) => setChain(e.target.value as SwapChain | "")} className="h-8 rounded-lg border border-line bg-surface px-2 text-xs">
+              <option value="">Every chain</option>
+              <option value="Bitcoin">{bitcoinName}</option>
+              {evmNetworksOf(network).map((n) => (
+                <option key={n.chain} value={n.chain}>
+                  {n.name}
+                </option>
+              ))}
+            </select>
+          }
+        />
+        {bids.error ? (
+          <ErrorState error={bids.error} />
+        ) : !bids.data ? (
+          <SkeletonRows rows={3} />
+        ) : shown.length === 0 ? (
+          <EmptyState title="No bid">Buyers bid for TESS with the command line wallet. Sell into a bid at once, without waiting for a buyer.</EmptyState>
+        ) : (
+          <ul className="divide-y divide-line">
+            {shown.map((b) => (
+              <BidRow
+                key={b.id}
+                bid={b}
+                own={b.buyer === active?.address}
+                supported={b.payment.chain === "Bitcoin" || evmNetworkOf(network, b.payment.chain) !== undefined}
+                onSell={() => setSelling(b)}
+              />
+            ))}
+          </ul>
+        )}
+      </Card>
+      {selling && <SaleSheet bid={selling} onClose={() => setSelling(null)} />}
+    </>
+  );
+}
+
+function SaleSheet({ bid, onClose }: { bid: Bid; onClose: () => void }) {
+  const { network } = useChain();
+  const wallet = useWallet();
+  const { active } = wallet;
+  const market = useMarket();
+  const tx = useTransaction();
+  const balance = useBalance(active?.address).data;
+  const bitcoin = bid.payment.chain === "Bitcoin";
+  const evm = evmNetworkOf(network, bid.payment.chain);
+  const chainName = useChainName(bid.payment.chain);
+  const symbol = paymentSymbol(bid.payment);
+  const decimals = paymentDecimals(bid.payment);
+  const [amount, setAmount] = useState("");
+  const [payout, setPayout] = useState("");
+  const [destination, setDestination] = useState(market.maker.state?.bitcoinAddress ?? "");
+  const [submitted, setSubmitted] = useState(false);
+  const [connectError, setConnectError] = useState<string>();
+  const [made, setMade] = useState<string>();
+  // The Bitcoin key of the account: the buyer locks the payment to it, and this wallet claims it.
+  const bitcoinKey = useQuery({
+    queryKey: ["bitcoin-key", active?.address],
+    queryFn: async () => makerKey((await wallet.keypair(active!.name)).seed()).publicKey,
+    enabled: bitcoin && Boolean(active),
+    staleTime: Infinity,
+  }).data;
+
+  // The address of the EVM wallet, if it is connected already.
+  useEffect(() => {
+    const provider = browserWallet();
+    if (bitcoin || !provider) return;
+    provider
+      .request({ method: "eth_accounts" })
+      .then(([address]) => address && setPayout((p) => p || address))
+      .catch(() => {});
+  }, [bitcoin]);
+
+  const parsed = parseAmount(amount);
+  const transferable = balance?.transferable.planck;
+  const max = transferable === undefined || transferable >= bid.wanted.planck ? bid.wanted : new Amount(transferable);
+  let invalid: string | null = !amount ? "Enter an amount" : (parsed.error ?? null);
+  if (!invalid && parsed.amount) {
+    if (parsed.amount.planck > bid.wanted.planck) invalid = `This bid wants ${formatTess(bid.wanted.planck, 4)} TESS`;
+    else if (parsed.amount.planck < bid.minSale.planck && parsed.amount.planck !== bid.wanted.planck) invalid = `This bid buys at least ${formatTess(bid.minSale.planck, 4)} TESS`;
+    else if (transferable !== undefined && parsed.amount.planck > transferable) invalid = "More than the transferable TESS of the account";
+  }
+  const due = parsed.amount ? paymentDue(parsed.amount.planck, bid.price) : undefined;
+  const payoutError = bitcoin
+    ? destination.trim() && !BITCOIN_ADDRESS.test(destination.trim())
+      ? "A Bitcoin address"
+      : undefined
+    : /^0x[0-9a-fA-F]{40}$/.test(payout.trim())
+      ? undefined
+      : "An EVM address: 0x and 40 digits";
+  const keyAddress = bitcoinKey ? addressOfKey(bitcoinKey, bitcoinNetworkOf(network)) : undefined;
+  const ready = bitcoin ? Boolean(bitcoinKey) : Boolean(evm && browserWallet());
+
+  const fromWallet = async () => {
+    setConnectError(undefined);
+    try {
+      if (bitcoin) setDestination((await connectBitcoin(bitcoinNetworkOf(network))).address);
+      else setPayout((await connectEvm(evm!)).address);
+    } catch (e) {
+      setConnectError(explainError(e));
+    }
+  };
+
+  const review = () => {
+    setSubmitted(true);
+    if (invalid || payoutError || !parsed.amount || !active || !ready) return;
+    const sold = parsed.amount;
+    const paidTo = bitcoin ? bitcoinKey! : unhex(payout.trim());
+    const address = destination.trim();
+    const account = active.name;
+    const dueText = `${decimal(paymentDue(sold.planck, bid.price), decimals)} ${symbol}`;
+    tx({
+      title: `Sell TESS to bid #${bid.id}`,
+      account,
+      summary: (
+        <>
+          {formatTess(sold.planck, 4)} <span className="text-xl text-muted">TESS</span>
+        </>
+      ),
+      details: [
+        ["You receive", `${dueText} on ${chainName}`],
+        ["Price", `${priceText(bid.payment, bid.price)} per TESS`],
+        ["Paid to", bitcoin ? `${address || keyAddress}, once claimed` : payout.trim()],
+        ["Buyer", <AddressLink address={bid.buyer} />],
+      ],
+      warning: `Your TESS are held for the buyer for 24 hours. The buyer locks ${dueText} for you; this wallet checks the payment and claims it${
+        bitcoin ? "" : " through your EVM wallet"
+      }, and only that hands the TESS over. If the buyer does not pay, or pays wrong, nothing is claimed and you take the TESS back after 24 hours. Keep the wallet open until paid.`,
+      // The sale saves its secret first: its fee is estimated without it.
+      fee: async (c) => {
+        const key = await wallet.keypair(account);
+        return estimateFee(c, (estimating) => estimating.swaps.sell(key, bid.id, { amount: sold, hash: new Uint8Array(32), payout: paidTo }), key);
+      },
+      operation: (c: TesseraxClient, key: Keypair) => market.sell(c, key, bid, sold, account, paidTo, bitcoin ? address : undefined),
+      onDone: (result) => setMade((result as StoredSale).id),
+    });
+  };
+
+  const sale = market.sales.find((s) => s.id === made);
+  return (
+    <Sheet title={`Sell TESS to bid #${bid.id}`} icon={<HandCoins size={18} />} onClose={onClose}>
+      {made ? (
+        <div className="space-y-5">
+          {sale ? <SaleProgress sale={sale} /> : <SkeletonRows rows={3} />}
+          <p className="text-xs text-muted">You can close this: the wallet goes on while it is open, and shows the sale in Your sales.</p>
+          <Button variant="secondary" className="w-full" onClick={onClose}>
+            Close
+          </Button>
+        </div>
+      ) : (
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-3 text-sm">
+            <div className="rounded-xl bg-surface-2 p-3">
+              <div className="text-xs text-muted">Price</div>
+              <div className="mt-0.5 font-semibold tabular">
+                {priceText(bid.payment, bid.price)} <span className="font-normal text-muted">/ TESS</span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-surface-2 p-3">
+              <div className="text-xs text-muted">Paid on</div>
+              <div className="mt-0.5 font-semibold">{chainName}</div>
+            </div>
+          </div>
+          <AmountInput
+            label="TESS to sell"
+            value={amount}
+            onChange={setAmount}
+            max={max}
+            error={submitted ? invalid : null}
+            hint={<>From {formatTess(bid.minSale.planck, 4)} to {formatTess(bid.wanted.planck, 4)} TESS</>}
+          />
+          <div className="rounded-xl border border-line p-3 text-sm">
+            <div className="flex justify-between gap-3">
+              <span className="text-muted">You receive</span>
+              <span className="font-semibold tabular">{due !== undefined ? `${decimal(due, decimals)} ${symbol}` : "…"}</span>
+            </div>
+            <div className="mt-1.5 flex justify-between gap-3">
+              <span className="text-muted">TESS from</span>
+              <span className="font-medium">{active?.name}</span>
+            </div>
+            <div className="mt-1.5 flex justify-between gap-3">
+              <span className="text-muted">Buyer</span>
+              <span className="font-medium">
+                {bid.completed}/{bid.sales} sales paid
+              </span>
+            </div>
+          </div>
+          {bitcoin ? (
+            <div>
+              <TextInput
+                label="Bitcoin address paid, optional"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+                placeholder={keyAddress ?? "bc1…"}
+                mono
+                error={submitted ? (payoutError ?? null) : null}
+                hint={<>The payment is locked to the Bitcoin key of this account; once claimed, it goes to this address, or to the one of the key.</>}
+              />
+              <button onClick={fromWallet} className="mt-1.5 text-xs font-medium text-accent">
+                Use the address of my Bitcoin wallet
+              </button>
+              {connectError && <p className="mt-1.5 text-xs text-danger">{connectError}</p>}
+            </div>
+          ) : (
+            <div>
+              <TextInput label="EVM address paid" value={payout} onChange={(e) => setPayout(e.target.value)} placeholder="0x…" mono error={submitted ? (payoutError ?? null) : null} />
+              {browserWallet() && (
+                <button onClick={fromWallet} className="mt-1.5 text-xs font-medium text-accent">
+                  Use the address of my EVM wallet
+                </button>
+              )}
+              {connectError && <p className="mt-1.5 text-xs text-danger">{connectError}</p>}
+            </div>
+          )}
+          <ol className="space-y-1.5 text-xs text-muted">
+            <li>1. Your TESS are held for the buyer, for 24 hours.</li>
+            <li>
+              2. The buyer locks {due !== undefined ? `${decimal(due, decimals)} ${symbol}` : "the payment"} for you on {chainName}, for 6 hours.
+            </li>
+            <li>
+              3. This wallet checks it{bitcoin ? " after 2 confirmations, about 20 minutes," : ""} and claims it with a secret only it knows{bitcoin ? "" : ", through your EVM wallet"}.
+            </li>
+            <li>4. The secret, public then, hands the TESS to the buyer. If the buyer never pays, nothing is claimed and you take the TESS back after 24 hours.</li>
+          </ol>
+          {!bitcoin && evm && (
+            <p className="rounded-xl bg-surface-2 px-3 py-2.5 text-xs text-muted">
+              The claim is a transaction of your EVM wallet on {chainName}: keep a little {evm.nativeCurrency.symbol} there for its gas.
+            </p>
+          )}
+          {!bitcoin && !browserWallet() && <NoBrowserWallet />}
+          <Button className="w-full" onClick={review} disabled={!ready}>
+            Review the sale
+          </Button>
+        </div>
+      )}
+    </Sheet>
+  );
+}
+
+const SALE_STATUS: Record<SaleStatus, { label: string; tone: "neutral" | "accent" | "success" | "warning" | "danger" }> = {
+  selling: { label: "Selling", tone: "neutral" },
+  waiting: { label: "Waiting for payment", tone: "accent" },
+  paid: { label: "Checking the payment", tone: "accent" },
+  verified: { label: "Payment found", tone: "accent" },
+  claiming: { label: "Claiming", tone: "accent" },
+  collected: { label: "Paid", tone: "success" },
+  done: { label: "Paid", tone: "success" },
+  refused: { label: "Payment refused", tone: "danger" },
+  expired: { label: "To take back", tone: "warning" },
+  refunded: { label: "Taken back", tone: "neutral" },
+  failed: { label: "Not sold", tone: "danger" },
+};
+
+/** Sales the wallet is working on. */
+const SALE_RUNNING = new Set<SaleStatus>(["selling", "waiting", "paid", "verified", "claiming", "collected"]);
+
+/** The step a sale is at: locking, payment, check, claim, delivery, done. */
+function saleStage(s: StoredSale): number {
+  switch (s.status) {
+    case "selling":
+    case "failed":
+      return 0;
+    case "waiting":
+      return 1;
+    case "paid":
+    case "refused":
+      return 2;
+    case "verified":
+    case "claiming":
+      return 3;
+    case "collected":
+      return 4;
+    case "done":
+      return 5;
+    default:
+      return s.lock ? 2 : 1;
+  }
+}
+
+const saleDue = (s: StoredSale) => {
+  const payment = { chain: s.chain, asset: s.asset };
+  return `${decimal(BigInt(s.payment), paymentDecimals(payment))} ${paymentSymbol(payment)}`;
+};
+
+function SaleProgress({ sale }: { sale: StoredSale }) {
+  const chainName = useChainName(sale.chain);
+  const stage = saleStage(sale);
+  const running = SALE_RUNNING.has(sale.status);
+  const steps = [
+    `Lock ${formatTess(BigInt(sale.amount), 4)} TESS for the buyer`,
+    `The buyer locks ${saleDue(sale)} for you on ${chainName}`,
+    "Check the payment",
+    "Claim the payment",
+    "Hand the TESS to the buyer",
+  ];
+  return (
+    <div className="space-y-4">
+      <ol className="space-y-2.5 text-sm">
+        {steps.map((text, i) => (
+          <li key={i} className={cx("flex items-center gap-2.5", i > stage && "text-muted")}>
+            {i < stage ? (
+              <CircleCheck size={16} className="shrink-0 text-success" />
+            ) : i === stage && running ? (
+              <Loader2 size={16} className="shrink-0 animate-spin text-accent" />
+            ) : i === stage ? (
+              <CircleAlert size={16} className="shrink-0 text-danger" />
+            ) : (
+              <Circle size={16} className="shrink-0 text-faint" />
+            )}
+            {text}
+          </li>
+        ))}
+      </ol>
+      <SaleActions sale={sale} />
+    </div>
+  );
+}
+
+/** What a sale waits for, and what the user can do about it. */
+function SaleActions({ sale }: { sale: StoredSale }) {
+  const { network } = useChain();
+  const market = useMarket();
+  const tx = useTransaction();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  const bitcoin = sale.chain === "Bitcoin";
+  const claimUrl = sale.claim ? (bitcoin ? bitcoinTxUrl(bitcoinNetworkOf(network), sale.claim) : evmTxUrl(evmNetworkOf(network, sale.chain), sale.claim)) : undefined;
+
+  const claim = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await market.claimSale(sale);
+    } catch (e) {
+      setError(explainError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const takeBack = () =>
+    tx({
+      title: `Take back sale #${sale.sale}`,
+      account: sale.account,
+      details: [["Returned", `${formatTess(BigInt(sale.amount), 4)} TESS`]],
+      operation: (c: TesseraxClient, key: Keypair) => c.swaps.refundSale(key, sale.sale!),
+      onDone: () => void market.saleRefunded(sale),
+    });
+
+  return (
+    <div className="space-y-2">
+      {sale.status === "waiting" && <p className="text-xs text-muted">The buyer locks the payment, usually within minutes. If it does not, the TESS can be taken back {hoursLeft(sale.deadline)}.</p>}
+      {sale.status === "verified" && !bitcoin && !sale.note && <p className="text-xs text-muted">Confirm the claim in your EVM wallet, before its lock expires {hoursLeft(sale.lockDeadline)}.</p>}
+      {sale.status === "collected" && <p className="text-xs text-muted">Payment claimed. The TESS go to the buyer.</p>}
+      {sale.note && <p className={cx("text-xs", sale.status === "refused" || sale.status === "failed" ? "text-danger" : sale.status === "paid" ? "text-muted" : "text-warning")}>{sale.note}</p>}
+      {sale.status === "refused" && <p className="text-xs text-muted">They can be taken back {hoursLeft(sale.deadline)}.</p>}
+      {claimUrl && (
+        <a href={claimUrl} target="_blank" rel="noreferrer" className="text-xs text-accent underline">
+          See the claim of the payment
+        </a>
+      )}
+      {sale.status === "verified" && !bitcoin && (
+        <Button size="sm" busy={busy} onClick={claim} disabled={!browserWallet()}>
+          <Wallet size={14} /> Claim {saleDue(sale)} with my EVM wallet
+        </Button>
+      )}
+      {sale.status === "expired" && (
+        <Button size="sm" variant="secondary" onClick={takeBack}>
+          Take back the TESS
+        </Button>
+      )}
+      {error && <p className="rounded-xl bg-danger-soft px-3 py-2.5 text-xs text-danger">{error}</p>}
+    </div>
+  );
+}
+
+function Sales() {
+  const market = useMarket();
+  const shown = market.sales.filter((s) => s.status !== "failed" || Date.now() - s.createdAt < 86_400_000);
+  return (
+    <Card>
+      <CardHeader title="Your sales" icon={<Clock size={16} />} />
+      {shown.length === 0 ? (
+        <p className="p-4 text-sm text-muted sm:p-5">No sale yet.</p>
+      ) : (
+        <ul className="divide-y divide-line">
+          {shown.map((s) => {
+            const status = SALE_STATUS[s.status];
+            return (
+              <li key={s.id} className="space-y-2 px-4 py-3.5 sm:px-5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-sm">
+                    <span className="font-semibold tabular">{formatTess(BigInt(s.amount), 4)} TESS</span>
+                    <span className="text-muted">
+                      {" "}
+                      for {saleDue(s)} · {s.account} · {timeAgo(new Date(s.createdAt))}
+                    </span>
+                  </span>
+                  <Badge tone={status.tone}>{status.label}</Badge>
+                </div>
+                <SaleActions sale={s} />
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 function SellTab() {
   const offers = useOffers();
+  const bids = useBids();
+  const market = useMarket();
   const { active } = useWallet();
   const { network } = useChain();
   const tx = useTransaction();
   const [creating, setCreating] = useState(false);
   const mine = (offers.data ?? []).filter((o) => o.maker === active?.address);
+  // Bids come with a runtime upgrade: without them, only offers.
+  const withBids = !(bids.error instanceof NoBids);
 
   return (
     <div className="grid gap-5 lg:grid-cols-[1fr_360px]">
-      <Card>
-        <CardHeader
-          title="Your offers"
-          icon={<Store size={16} />}
-          action={
-            <Button size="sm" onClick={() => setCreating(true)}>
-              <Plus size={14} /> New offer
-            </Button>
-          }
-        />
-        {offers.error ? (
-          <OffersError error={offers.error} />
-        ) : !offers.data ? (
-          <SkeletonRows rows={2} />
-        ) : mine.length === 0 ? (
-          <EmptyState title="No offer">Offer TESS for ETH, USDC or USDT: buyers lock their payment, and the maker of this wallet fills it.</EmptyState>
-        ) : (
-          <ul className="divide-y divide-line">
-            {mine.map((o) => (
-              <li key={o.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
-                <div className="text-sm">
-                  <div>
-                    <span className="font-semibold">#{o.id}</span> · <span className="tabular">{formatTess(o.available.planck, 4)} TESS</span> at {priceText(o.payment, o.price)} on{" "}
-                    {chainName(network, o.payment.chain)}
+      <div className="min-w-0 space-y-5">
+        {withBids && <BidsCard bids={bids} />}
+        <Card>
+          <CardHeader
+            title="Your offers"
+            icon={<Store size={16} />}
+            action={
+              <Button size="sm" onClick={() => setCreating(true)}>
+                <Plus size={14} /> New offer
+              </Button>
+            }
+          />
+          {offers.error ? (
+            <OffersError error={offers.error} />
+          ) : !offers.data ? (
+            <SkeletonRows rows={2} />
+          ) : mine.length === 0 ? (
+            <EmptyState title="No offer">Offer TESS for ETH, USDC or USDT: buyers lock their payment, and the maker of this wallet fills it.</EmptyState>
+          ) : (
+            <ul className="divide-y divide-line">
+              {mine.map((o) => (
+                <li key={o.id} className="flex flex-wrap items-center justify-between gap-3 px-4 py-3.5 sm:px-5">
+                  <div className="text-sm">
+                    <div>
+                      <span className="font-semibold">#{o.id}</span> · <span className="tabular">{formatTess(o.available.planck, 4)} TESS</span> at {priceText(o.payment, o.price)} on{" "}
+                      {chainName(network, o.payment.chain)}
+                    </div>
+                    <div className="mt-0.5 text-xs text-muted">
+                      Paid to <span className="font-mono">{hex(o.payout)}</span> · {o.completed}/{o.fills} trades completed
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-xs text-muted">
-                    Paid to <span className="font-mono">{hex(o.payout)}</span> · {o.completed}/{o.fills} trades completed
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() =>
-                    tx({
-                      title: `Withdraw offer #${o.id}`,
-                      details: [["Returned", `${formatTess(o.available.planck, 4)} TESS, and the deposit of the offer`]],
-                      warning: "Trades already filled go on: their TESS stay locked until claimed or expired.",
-                      operation: (c: TesseraxClient, key: Keypair) => c.swaps.cancelOffer(key, o.id),
-                    })
-                  }
-                >
-                  Withdraw
-                </Button>
-              </li>
-            ))}
-          </ul>
-        )}
-      </Card>
-      <MakerCard />
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() =>
+                      tx({
+                        title: `Withdraw offer #${o.id}`,
+                        details: [["Returned", `${formatTess(o.available.planck, 4)} TESS, and the deposit of the offer`]],
+                        warning: "Trades already filled go on: their TESS stay locked until claimed or expired.",
+                        operation: (c: TesseraxClient, key: Keypair) => c.swaps.cancelOffer(key, o.id),
+                      })
+                    }
+                  >
+                    Withdraw
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
+      <div className="space-y-5">
+        {(withBids || market.sales.length > 0) && <Sales />}
+        <MakerCard />
+      </div>
       {creating && <OfferSheet onClose={() => setCreating(false)} />}
     </div>
   );

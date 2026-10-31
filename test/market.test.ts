@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { decimal, evmNetworksOf, hex, unhex, units } from "../src/lib/evm";
 import { networks } from "../src/lib/networks";
-import { decryptSecret, encryptSecret } from "../src/lib/market";
+import { decryptSecret, encryptSecret, salePaymentProblem, SALE_CLAIM_SECONDS } from "../src/lib/market";
 
 test("prices are read and written in the smallest unit of their asset", () => {
   assert.equal(units("0.05", 6).value, 50_000n);
@@ -37,4 +37,23 @@ test("secrets of purchases are encrypted with a key of their account", () => {
   assert.notDeepEqual(ciphertext.slice(0, 32), secret);
   assert.deepEqual(decryptSecret(seed, nonce, ciphertext), secret);
   assert.throws(() => decryptSecret(new Uint8Array(32).fill(8), nonce, ciphertext));
+});
+
+test("the payment of a sale is claimed only if it fits", () => {
+  const hash = new Uint8Array(32).fill(1);
+  const payout = new Uint8Array(20).fill(2);
+  const sale = { hash, payout, due: 50_000n, payment: { chain: "Base" as const, asset: "Usdc" as const } };
+  const now = 1_000_000;
+  const paid = { state: "Locked", hash, recipient: payout, amount: 50_000n, timelock: now + 6 * 3600 };
+  assert.equal(salePaymentProblem(paid, sale, now), undefined);
+  assert.equal(salePaymentProblem({ ...paid, amount: 60_000n }, sale, now), undefined);
+  assert.equal(salePaymentProblem({ ...paid, state: "Refunded" }, sale, now), "the payment is already refunded");
+  assert.equal(salePaymentProblem({ ...paid, hash: new Uint8Array(32) }, sale, now), "the payment is locked under another hash");
+  assert.equal(salePaymentProblem({ ...paid, recipient: new Uint8Array(20) }, sale, now), "the payment goes to another address");
+  assert.equal(salePaymentProblem({ ...paid, amount: undefined }, sale, now), "the payment is not in USDC");
+  assert.equal(salePaymentProblem({ ...paid, amount: 49_999n }, sale, now), "the payment holds 0.049999 USDC instead of 0.05");
+  assert.equal(salePaymentProblem({ ...paid, timelock: now + SALE_CLAIM_SECONDS - 1 }, sale, now), "the payment expires in less than an hour");
+  const bitcoin = { ...sale, payout: new Uint8Array(33).fill(3), due: 1_000n, payment: { chain: "Bitcoin" as const, asset: "Native" as const } };
+  assert.equal(salePaymentProblem({ ...paid, recipient: bitcoin.payout, amount: 1_000n, state: "Spent" }, bitcoin, now), "the payment is already spent");
+  assert.equal(salePaymentProblem({ ...paid, recipient: new Uint8Array(33), amount: 1_000n }, bitcoin, now), "the payment is locked for another key");
 });
